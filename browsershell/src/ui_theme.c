@@ -1118,24 +1118,36 @@ void uiIcon(UiPainter* p, UiIcon icon, UiRect r, unsigned argb, float stroke)
         break;
     }
     case UI_ICON_LOCK: {
-        float bodyW = u * 0.94f;
-        float bodyH = u * 0.72f;
-        float bodyY = cy - u * 0.02f;
+        /* Material-style padlock: a rounded body with the shackle arch springing
+         * from its top edge. The old one drew the arch from a circle whose box
+         * did not touch the body, so the two parts read as separate shapes. */
+        float bodyW = u * 1.02f;
+        float bodyH = u * 0.74f;
+        float bodyTop = cy + u * 0.02f;
+        float shackleW = u * 0.62f;
+        float shackleH = u * 0.58f;
 
-        uiFillRoundRect(p, uiRectMake((int)(cx - bodyW / 2), (int)bodyY,
-                                      (int)bodyW, (int)bodyH),
-                        (int)(u * 0.14f), argb);
-        GdipDrawArc(p->g, pen, cx - bodyW * 0.32f, cy - u * 0.62f,
-                    bodyW * 0.64f, bodyW * 0.64f, 180.0f, 180.0f);
+        uiFillRoundRect(p, uiRectMake((int)(cx - bodyW / 2.0f + 0.5f),
+                                      (int)(bodyTop + 0.5f),
+                                      (int)(bodyW + 0.5f), (int)(bodyH + 0.5f)),
+                        (int)(u * 0.16f), argb);
+
+        GdipDrawArc(p->g, pen, cx - shackleW / 2.0f, bodyTop - shackleH,
+                    shackleW, shackleH * 2.0f, 180.0f, 180.0f);
         break;
     }
     case UI_ICON_ARROW_RIGHT: {
-        float half = u * 0.62f;
-        float points[] = { cx - u * 0.10f, cy - u * 0.42f,
-                           cx + u * 0.34f, cy,
-                           cx - u * 0.10f, cy + u * 0.42f };
+        /* The shaft ends *at* the tip: the old version drew it half a glyph
+         * further right than the head, so the arrow looked like a line with a
+         * hook on it. */
+        float tailX = cx - u * 0.58f;
+        float tipX = cx + u * 0.56f;
+        float headX = tipX - u * 0.36f;
+        float points[] = { headX, cy - u * 0.38f,
+                           tipX, cy,
+                           headX, cy + u * 0.38f };
 
-        GdipDrawLine(p->g, pen, cx - half, cy, cx + half, cy);
+        GdipDrawLine(p->g, pen, tailX, cy, tipX - u * 0.05f, cy);
         polyline(p, pen, points, 6);
         break;
     }
