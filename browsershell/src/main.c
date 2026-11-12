@@ -3823,6 +3823,15 @@ static void toggleFind(void)
     g_findTotal = 0;
     g_findQuery[0] = 0;
 
+    if (!g_findVisible) {
+        Tab* tab = &g_tabs[g_activeTab];
+
+        /* Closing the bar has to clear the page: the marks live in the document,
+         * and an empty query is the script's "remove everything" path. */
+        if (tab->used && tab->view)
+            agave_webview_search(tab->view, "", 1, 0);
+    }
+
     /* The find bar is painted by UiChrome now; only the native EDIT is shown or
      * hidden, and the layout follows the model's find_visible flag. */
     ShowWindow(g_findEdit, g_findVisible ? SW_SHOW : SW_HIDE);
@@ -9515,20 +9524,29 @@ static LRESULT CALLBACK findBarProc(HWND hwnd, UINT message, WPARAM wParam, LPAR
         event.x = (short)LOWORD(lParam);
         event.y = (short)HIWORD(lParam);
 
+        if (message == WM_LBUTTONUP) {
+            /* Deliver the click *before* dropping capture. ReleaseCapture()
+             * sends WM_CAPTURECHANGED with lParam 0, and that handler sends a
+             * LEAVE which clears the pressed state - so releasing first meant
+             * the UP found nothing pressed and close / next / prev did nothing. */
+            event.type = UI_MOUSE_UP;
+            findBarMouse(hwnd, win, &event);
+
+            if (GetCapture() == hwnd)
+                ReleaseCapture();
+
+            return 0;
+        }
+
         if (message == WM_MOUSEMOVE) {
             event.type = UI_MOUSE_MOVE;
         } else if (message == WM_MOUSELEAVE) {
             event.type = UI_MOUSE_LEAVE;
             event.x = 0;
             event.y = 0;
-        } else if (message == WM_LBUTTONDOWN) {
+        } else {
             event.type = UI_MOUSE_DOWN;
             SetCapture(hwnd);
-        } else {
-            event.type = UI_MOUSE_UP;
-
-            if (GetCapture() == hwnd)
-                ReleaseCapture();
         }
 
         findBarMouse(hwnd, win, &event);
