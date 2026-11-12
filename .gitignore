@@ -1,0 +1,31 @@
+# ---- build outputs ----
+build*/
+browsershell/build*/
+*.obj
+*.exp
+*.pdb
+*.ilk
+*.map
+*.user
+*.log
+*.tlog
+*.idb
+*.ipdb
+
+# ---- engine / SDK binaries (kept local; bring your own copy) ----
+*.dll
+*.exe
+*.asar
+
+# ---- runtime profile, caches, test artifacts ----
+LocalStorage/
+cookies.dat
+=ro
+*.out
+*.err
+*.png
+*.bmp
+*.tmp
+
+# ---- editor / script leftovers ----
+/browsershell/src/main.c-

@@ -1,0 +1,5 @@
+#include <windows.h>
+
+/* Shell / executable icon. The same ID is used by registerShellWindowClass()
+ * in main.c so the title bar, Alt+Tab and taskbar all pick it up. */
+101 ICON "app.ico"

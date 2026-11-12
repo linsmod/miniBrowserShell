@@ -1,0 +1,12 @@
+build*/
+*.user
+*.log
+*.png
+*.bmp
+*.out
+*.err
+*.obj
+*.exp
+*.pdb
+*.ilk
+*.map

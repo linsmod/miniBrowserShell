@@ -1,0 +1,53 @@
+# browsershell — Agent 入口
+
+MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webview_*` 适配层 +
+引擎无关的自绘 UI）。本文件只放**测试纪律**和**最容易踩的坑**，功能说明见 `README.md`。
+
+## 测试纪律（最重要）
+
+**所有测试都必须是 headless probe，绝不碰桌面。** 这是硬性要求，不是偏好：
+
+1. **不启动 GUI 壳做测试**。`minishell.exe --probe <url> --eval "probeExit(...)"`，退出码是权威判据
+   （0 OK / 1 usage / 2..4 超时或无 exit / 5 加载错误 / 6 空文档）。
+2. **不移动真实鼠标、不 `SetForegroundWindow`、不抓桌面截图**。`SetCursorPos` / `mouse_event` /
+   `SendInput` / `CopyFromScreen` 一律禁止：用户随时在用桌面，这些操作会抢他的指针和焦点。
+3. **需要像素**用 `tools/screenshot.ps1`（= `--probe --shot`，抓控件自己的 mirror buffer，
+   窗口从不 `ShowWindow`）。能用数字判断的就不要截图。
+4. **需要看 UI 渲染**用 `--ui-shot`（chrome 离屏渲染），不要开窗口。
+5. **UI 相关测试偶发失败必须二次确认**：用户可能正在操作桌面影响结果；连续两次才算失败。
+6. **测试脚本放 `tools/`，不要放 `%TEMP%`**；高频使用的沉淀成可复用脚本。
+7. **测试要快**：新增用例尽量 < 15s，本地文件页不要用大 `--wait/--settle`。
+8. **能力缺口要如实记录**：某些行为（真实右键、焦点转移、宿主覆盖窗口）在 probe 里测不到，
+   要么加探针能力，要么明确写"只能人工验证"，不要假装测过。
+
+## 现有工具
+
+| 脚本 | 用途 |
+|---|---|
+| `tools/probe.ps1` | headless 探针：`-Url -Eval -EvalFile -Inject -Wait -Settle -Timeout [-PassThru]` |
+| `tools/screenshot.ps1` | headless 截图：`--probe --shot [-Rect x,y,w,h]` |
+| `tools/inspect-check.ps1` | 元素标记（inspect）页面半边的回归：注入 `assets/inspect.js`，断言上报的 rect |
+| `tools/inspect_hang.ps1` | 卡死时挂 cdb 抓全部线程栈（只读，摘下后恢复） |
+| `tools/dlserver.ps1` | 下载/新窗口回归用的本地 HTTP 服务 |
+
+## 引擎侧已知坑（会静默失败）
+
+- `mbSetContextMenuEnabled(FALSE)` 时引擎**吞掉**右键，`WM_CONTEXTMENU` 不会送到宿主；
+  右键菜单从控件自己的 `WM_RBUTTONUP` 触发（`mb_view.c`）。
+- `mbInit(NULL)` 不读 Windows 代理；`mb_view.c` 用 `WinHttpGetIEProxyConfigForCurrentUser` 显式喂给引擎，
+  否则强制代理网络下所有导航静默无响应。
+- 首次导航提交前不能 `mbReload`（会丢掉在途加载且不重发）。
+- 引擎与宿主的 `on_message` 回调在 blink 线程，必须 `postEvent` 到自己窗口再在 UI 线程处理。
+- 页面里的覆盖层（inspector.js 那类）会撑出滚动条；元素标记改由宿主窗口绘制（`ui_inspect.c`），
+  页面只上报 `getBoundingClientRect()`。
+- **webview 上方不要放任何窗口**：哪怕是一个 1/255 alpha 的分层子窗口，只要盖在页面控件上，
+  resize 后页面就不再重绘（停在旧帧）。inspect 期的输入拦截改用 `WH_MOUSE_LL` 钩子
+  （`main.c` 的 `inspectMouseHook`）：只吞事件不画东西，页面照常重绘。
+
+## 构建
+
+```powershell
+cmake --build build-msvc --config Release
+```
+
+改 DLL 后重生成导入库：`pwsh -File tools\gen_import_lib.ps1`。
