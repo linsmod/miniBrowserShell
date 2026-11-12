@@ -10583,11 +10583,26 @@ static ShellWindow* createShellWindow(const char* title)
     if (getenv("AGB_SHELL_FIND"))
         win->findVisible = 1;
 
-    win->hwnd = CreateWindowExA(0, "MiniShellWindow",
-                                title ? title : "MiniShell - miniblink",
-                                WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
-                                CW_USEDEFAULT, CW_USEDEFAULT, 1100, 800,
-                                NULL, NULL, g_instance, win);
+    /* The default window size is in DIPs: on a 125% display the window has to be
+     * physically larger, or the client ends up 20% smaller than the intended
+     * 1100x800 - which makes every page look zoomed in next to a normal browser
+     * window (the page itself is already scaled by the DPI). */
+    {
+        unsigned dpi = shellOps()->dpi_for_window(NULL, NULL);
+        int width = 1100;
+        int height = 800;
+
+        if (dpi >= 96) {
+            width = MulDiv(width, (int)dpi, 96);
+            height = MulDiv(height, (int)dpi, 96);
+        }
+
+        win->hwnd = CreateWindowExA(0, "MiniShellWindow",
+                                    title ? title : "MiniShell - miniblink",
+                                    WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
+                                    CW_USEDEFAULT, CW_USEDEFAULT, width, height,
+                                    NULL, NULL, g_instance, win);
+    }
 
     if (!win->hwnd) {
         agbLog(AGB_LOG_SHELL, "CreateWindowEx failed: %lu", (unsigned long)GetLastError());

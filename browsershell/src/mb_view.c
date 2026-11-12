@@ -1871,7 +1871,7 @@ static const char kSettingsHtml[] =
 "<div class=\"row\"><div>System scaling (from Windows)</div>"
 "<div><span id=\"scale\"></span> <code id=\"dpi\"></code></div></div>"
 "<div class=\"row\"><div>Page zoom</div>"
-"<div><code>Default zoom above, or Ctrl + / - / 0</code></div></div></section>"
+"<div><code>Default zoom above, or Ctrl + / - / 0 (on top of the system scaling)</code></div></div></section>"
 
 "<section><h2>Data</h2>"
 "<div class=\"row\"><div>History: <span id=\"history\">0</span> entries</div>"
