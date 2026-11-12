@@ -24,7 +24,6 @@
 #include <string.h>
 
 #define INSPECT_CLASS       L"MiniShellInspectOverlay"
-#define INSPECT_BORDER_DIP  2
 
 /* Highlight colours, straight from the reference inspector.js (sky-400,
  * #38BDF8): a 16% wash plus a 95% ring. The theme accent turned muddy on pages
@@ -181,12 +180,10 @@ static int pageArea(const UiInspect* insp, RECT* area)
     return 0;
 }
 
-/* The element rect, clipped to the page and expanded by the frame. 0 = nothing
- * visible. Both rects are in screen pixels. */
+/* The element rect, clipped to the page. 0 = nothing visible. Both rects are in
+ * screen pixels. */
 static int markBox(const UiInspect* insp, const RECT* area, RECT* box)
 {
-    int border = inspScale(insp, INSPECT_BORDER_DIP);
-
     box->left = area->left + insp->mark_x;
     box->top = area->top + insp->mark_y;
     box->right = box->left + insp->mark_w;
@@ -200,21 +197,10 @@ static int markBox(const UiInspect* insp, const RECT* area, RECT* box)
     if (box->right - box->left < 1 || box->bottom - box->top < 1)
         return 0;
 
-    /* The ring sits *outside* the element's box on every side (the reference
-     * inspector.js positions its outline div at left-2/top-2 with +4 size), so
-     * the element's own border stays visible under the highlight. A stroke that
-     * only grew right/bottom looked lopsided. */
-    box->left -= border;
-    box->top -= border;
-    box->right += border;
-    box->bottom += border;
-
-    if (box->left < area->left) box->left = area->left;
-    if (box->top < area->top) box->top = area->top;
-    if (box->right > area->right) box->right = area->right;
-    if (box->bottom > area->bottom) box->bottom = area->bottom;
-
-    return box->right - box->left >= 1 && box->bottom - box->top >= 1;
+    /* No outward expansion: the ring sits *on* the element's box, the way
+     * Chrome's own inspector draws it, so the mark and the element line up
+     * exactly. */
+    return 1;
 }
 
 /* Only the frame is drawn here. The element info goes to the shell's bottom-left
@@ -250,12 +236,28 @@ static void inspectRender(UiInspect* insp)
         return;
     }
 
-    border = inspScale(insp, INSPECT_BORDER_DIP);
+    /* Ring thickness: 1.5 DIP rounded, i.e. 2 device pixels at 100-125% and 3 at
+     * 150%. It is drawn as four integer rects instead of an antialiased stroke:
+     * a GDI+ stroke on a 2.5 px pen smears over ~4 px of edge, which is what
+     * read as "too thick". */
+    border = (inspScale(insp, 3) + 1) / 2;
+    if (border < 1)
+        border = 1;
+    if (border * 2 >= w || border * 2 >= h) {
+        uiFillRect(&painter, uiRectMake(0, 0, w, h), INSPECT_BORDER_ARGB);
+        uiPainterEnd(&painter);
+        presentLayered(insp->hwnd, &g_surface, box.left, box.top, w, h);
+        return;
+    }
 
-    uiFillRect(&painter, uiRectMake(0, 0, w, h), INSPECT_FILL_ARGB);
-    uiStrokeRoundRect(&painter, uiRectMake(border / 2, border / 2,
-                                           w - border, h - border),
-                      0, INSPECT_BORDER_ARGB, (float)border);
+    uiFillRect(&painter, uiRectMake(border, border, w - border * 2, h - border * 2),
+               INSPECT_FILL_ARGB);
+
+    uiFillRect(&painter, uiRectMake(0, 0, w, border), INSPECT_BORDER_ARGB);
+    uiFillRect(&painter, uiRectMake(0, h - border, w, border), INSPECT_BORDER_ARGB);
+    uiFillRect(&painter, uiRectMake(0, border, border, h - border * 2), INSPECT_BORDER_ARGB);
+    uiFillRect(&painter, uiRectMake(w - border, border, border, h - border * 2),
+               INSPECT_BORDER_ARGB);
 
     uiPainterEnd(&painter);
 
