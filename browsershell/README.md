@@ -80,6 +80,7 @@ Cookie / localStorage 都在这个目录下，每个标签共享同一 profile�
 | 直接拦截并伪造响应 | `mbOnLoadUrlBegin` 里 `mbNetSetData` + `mbNetSetMIMEType` 后返回 `TRUE`（mb 不再发请求） |
 | 页面截图（探针） | `mbGetLockedViewDC` + `StretchBlt`（隐藏窗口也能取到 backing store） |
 | `minishell://downloads` | 适配层自己生成下载列表 HTML |
+| `minishell://settings` | 适配层生成的设置页；控件通过 `agavePostMessage('__agb_settings_*__')` 与外壳双向通信 |
 
 引擎回调部分在 loader 线程，**全部 PostMessage 到控件窗口**，再由控件子类在 UI 线程调用外壳回调；
 探针会检查这一点（`callback thread ok`）。
@@ -92,6 +93,8 @@ Cookie / localStorage 都在这个目录下，每个标签共享同一 profile�
 - 查找栏：浮层、Enter/Shift+Enter、Esc 关闭
 - 自绘右键菜单和应用菜单、书签/历史子菜单
 - 主题 `AGB_SHELL_THEME=light|dark|auto`、Per-Monitor V2 DPI
+- 设置页（应用菜单 → Settings）：主题、搜索引擎、默认缩放、启动恢复会话、清空历史、下载目录；
+  改动即时生效并写入 `<profile>/prefs.txt`（主题仍在 `theme.txt`）
 - 下载：写入系统 Downloads（或 `--download-dir` 之外的默认目录），状态气泡显示进度/结果
 - 单实例 / `--new-tab` / `--new-window` 交接到已运行窗口
 

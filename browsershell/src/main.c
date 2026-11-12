@@ -10,6 +10,7 @@
  */
 
 #include <windows.h>
+#include <shellapi.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -597,6 +598,99 @@ static void themePrefSave(void)
     fclose(file);
 }
 
+/* ------------------------------------------------------------------------- */
+/* preferences (the settings page)                                           */
+/* ------------------------------------------------------------------------- */
+
+/* Everything the settings page can change, persisted in <profile>/prefs.txt as
+ * key=value lines. The theme keeps its own theme.txt (the app menu and the env
+ * override already write there); this file holds the rest. */
+typedef struct {
+    int search;    /* 0 Baidu, 1 Bing, 2 Google, 3 DuckDuckGo */
+    int zoom;      /* default page zoom for new tabs, percent */
+    int restore;   /* 1 = reopen last session's tabs on startup */
+} ShellPreferences;
+
+static ShellPreferences g_prefs = { 0, 100, 1 };
+
+static const char* kEngineNames[] = { "baidu", "bing", "google", "duckduckgo" };
+static const char* kEngineLabels[] = { "Baidu", "Bing", "Google", "DuckDuckGo" };
+static const char* kEngineSearch[] = {
+    "https://www.baidu.com/s?wd=",
+    "https://www.bing.com/search?q=",
+    "https://www.google.com/search?q=",
+    "https://duckduckgo.com/?q="
+};
+
+#define ENGINE_COUNT ((int)(sizeof(kEngineNames) / sizeof(kEngineNames[0])))
+
+static void prefsSave(void)
+{
+    char path[MAX_PATH_CHARS];
+    FILE* file;
+
+    statePath(path, sizeof(path), "prefs.txt");
+    file = fopen(path, "wb");
+
+    if (!file) {
+        agbLog(AGB_LOG_SHELL, "prefs: cannot write %s", path);
+        return;
+    }
+
+    fprintf(file, "search=%s\nzoom=%d\nrestore=%d\n",
+            kEngineNames[g_prefs.search], g_prefs.zoom, g_prefs.restore);
+    fclose(file);
+}
+
+static void prefsLoad(void)
+{
+    char path[MAX_PATH_CHARS];
+    char line[256];
+    FILE* file;
+
+    statePath(path, sizeof(path), "prefs.txt");
+    file = fopen(path, "rb");
+
+    if (!file)
+        return;
+
+    while (fgets(line, sizeof(line), file)) {
+        char* value = strchr(line, '=');
+        char* end;
+
+        if (!value)
+            continue;
+
+        *value++ = 0;
+
+        end = value + strlen(value);
+        while (end > value && (end[-1] == '\n' || end[-1] == '\r' || end[-1] == ' '))
+            *--end = 0;
+
+        if (!strcmp(line, "search")) {
+            int i;
+
+            for (i = 0; i < ENGINE_COUNT; ++i) {
+                if (!_stricmp(value, kEngineNames[i])) {
+                    g_prefs.search = i;
+                    break;
+                }
+            }
+        } else if (!strcmp(line, "zoom")) {
+            int zoom = atoi(value);
+
+            if (zoom >= 25 && zoom <= 400)
+                g_prefs.zoom = zoom;
+        } else if (!strcmp(line, "restore")) {
+            g_prefs.restore = atoi(value) ? 1 : 0;
+        }
+    }
+
+    fclose(file);
+    agbLog(AGB_LOG_SHELL, "prefs: search=%s zoom=%d restore=%d",
+           kEngineNames[g_prefs.search], g_prefs.zoom, g_prefs.restore);
+}
+
 /* Profile-backed shell state. Both the GUI and the probe need it: the probe
  * reads history/bookmarks too (a probe run could otherwise not verify that the
  * files are loaded), and it must not re-implement the profile layout. */
@@ -604,6 +698,7 @@ static void shellStateInit(void)
 {
     dataDirInit();
     themePrefLoad();
+    prefsLoad();
     loadBookmarks();
     loadHistory();
 }
@@ -690,9 +785,30 @@ static void recordHistory(const char* url)
     }
 }
 
-static void saveSession(void)
+/* The settings page's "Clear history": empty the in-memory ring and the file.
+ * recordHistory() only ever appends, so this is the one place that truncates. */
+static void clearHistoryAll(void)
 {
     char path[MAX_PATH_CHARS];
+    FILE* file;
+
+    g_historyCount = 0;
+
+    statePath(path, sizeof(path), "history.txt");
+    file = fopen(path, "wb");
+
+    if (file) {
+        fclose(file);
+    } else {
+        int savedErrno = errno;
+
+        agbLog(AGB_LOG_SHELL, "history: cannot truncate %s (errno=%d: %s)",
+               path, savedErrno, strerror(savedErrno));
+    }
+}
+
+static void saveSession(void)
+{    char path[MAX_PATH_CHARS];
     FILE* file;
     int i, w;
     int saved = 0;
@@ -1470,6 +1586,10 @@ static void onProgress(AgaveWebView* view, int percent, int finished, void* user
 /* The page reports that Tab traversal left it (see the prelude listener): hand
  * the keyboard back to the address bar, the way Chrome does when Tab walks out
  * of the last focusable element. */
+static void settingsSendAll(AgaveWebView* view);
+static void settingsApply(const char* key, const char* value);
+static void settingsAction(AgaveWebView* view, const char* action);
+
 static void onPageMessage(AgaveWebView* view, const char* message, void* user)
 {
     Tab* tab = (Tab*)user;
@@ -1482,6 +1602,38 @@ static void onPageMessage(AgaveWebView* view, const char* message, void* user)
         return;
 
     enterTabWindow(tab);
+
+    /* minishell://settings: the page asks for the current values, pushes one
+     * "key=value" per change and runs a few actions. See loadSettingsPage() in
+     * mb_view.c for the page half. */
+    if (!strncmp(message, "__agb_settings_get__", 20)) {
+        settingsSendAll(view);
+        return;
+    }
+
+    if (!strncmp(message, "__agb_settings_set__", 20)) {
+        const char* pair = message + 20;
+        const char* equals = strchr(pair, '=');
+        char key[64];
+
+        if (equals) {
+            size_t length = (size_t)(equals - pair);
+
+            if (length >= sizeof(key))
+                length = sizeof(key) - 1;
+            memcpy(key, pair, length);
+            key[length] = 0;
+
+            settingsApply(key, equals + 1);
+            settingsSendAll(view);
+        }
+        return;
+    }
+
+    if (!strncmp(message, "__agb_settings_do__", 19)) {
+        settingsAction(view, message + 19);
+        return;
+    }
 
     /* Find counter from the page's find script: "3/12", or "0/0" when nothing
      * matched. Only the overlay is repainted, so typing is not disturbed. */
@@ -3262,7 +3414,7 @@ static void normalizeUrl(const char* input, char* out, size_t outSize)
 
         encoded[o] = 0;
 
-        _snprintf(out, outSize, "https://www.baidu.com/s?wd=%s", encoded);
+        _snprintf(out, outSize, "%s%s", kEngineSearch[g_prefs.search], encoded);
         out[outSize - 1] = 0;
         return;
     }
@@ -4014,6 +4166,124 @@ static void applyThemePref(int pref)
     g_cur = previous;
 }
 
+/* ------------------------------------------------------------------------- */
+/* settings page (minishell://settings)                                      */
+/* ------------------------------------------------------------------------- */
+
+/* One "key=value" per message: the page then needs no JSON parser, and a path
+ * (spaces, backslashes) survives as-is because '=' is the only separator. */
+static void settingsSend(AgaveWebView* view, const char* key, const char* value)
+{
+    char message[600];
+    char* p;
+
+    if (!view || !key)
+        return;
+
+    _snprintf(message, sizeof(message) - 1, "__agb_settings__%s=%s", key,
+              value ? value : "");
+    message[sizeof(message) - 1] = 0;
+
+    for (p = message; *p; ++p) {
+        if (*p == '\r' || *p == '\n')
+            *p = ' ';
+    }
+
+    agave_webview_post_message(view, message);
+}
+
+static void settingsSendAll(AgaveWebView* view)
+{
+    char text[MAX_PATH_CHARS];
+    char number[32];
+
+    settingsSend(view, "theme", themePrefName(g_themePref));
+    settingsSend(view, "search", kEngineNames[g_prefs.search]);
+
+    _snprintf(number, sizeof(number), "%d", g_prefs.zoom);
+    settingsSend(view, "zoom", number);
+
+    _snprintf(number, sizeof(number), "%d", g_prefs.restore);
+    settingsSend(view, "restore", number);
+
+    _snprintf(number, sizeof(number), "%d", g_historyCount);
+    settingsSend(view, "history", number);
+
+    _snprintf(number, sizeof(number), "%d", g_bookmarkCount);
+    settingsSend(view, "bookmarks", number);
+
+    if (shellOps()->downloads_dir(NULL, text, sizeof(text)))
+        settingsSend(view, "downloads", text);
+
+    if (shellOps()->profile_root(NULL, text, sizeof(text)))
+        settingsSend(view, "profile", text);
+
+    settingsSend(view, "version", "miniblink 132, built " __DATE__);
+    settingsSend(view, "done", "1");
+}
+
+static void settingsApply(const char* key, const char* value)
+{
+    if (!key || !value)
+        return;
+
+    if (!strcmp(key, "theme")) {
+        int pref = SHELL_THEME_SYSTEM;
+
+        if (themePrefFromName(value, &pref)) {
+            agbLog(AGB_LOG_SHELL, "settings: theme -> %s", value);
+            applyThemePref(pref);
+        }
+    } else if (!strcmp(key, "search")) {
+        int i;
+
+        for (i = 0; i < ENGINE_COUNT; ++i) {
+            if (!_stricmp(value, kEngineNames[i])) {
+                agbLog(AGB_LOG_SHELL, "settings: search -> %s", value);
+                g_prefs.search = i;
+                prefsSave();
+                break;
+            }
+        }
+    } else if (!strcmp(key, "zoom")) {
+        int zoom = atoi(value);
+
+        if (zoom < 25)
+            zoom = 25;
+        if (zoom > 400)
+            zoom = 400;
+
+        agbLog(AGB_LOG_SHELL, "settings: zoom -> %d", zoom);
+        g_prefs.zoom = zoom;
+        prefsSave();
+
+        /* Apply to the tab the user is looking at, so the choice is visible. */
+        if (g_cur)
+            setZoom(zoom, "settings");
+    } else if (!strcmp(key, "restore")) {
+        g_prefs.restore = atoi(value) ? 1 : 0;
+        agbLog(AGB_LOG_SHELL, "settings: restore -> %d", g_prefs.restore);
+        prefsSave();
+    }
+}
+
+static void settingsAction(AgaveWebView* view, const char* action)
+{
+    if (action && !strcmp(action, "clear-history")) {
+        clearHistoryAll();
+        agbLog(AGB_LOG_SHELL, "settings: history cleared");
+    } else if (action && !strcmp(action, "open-downloads")) {
+        char dir[MAX_PATH_CHARS];
+
+        if (shellOps()->downloads_dir(NULL, dir, sizeof(dir))) {
+            agbLog(AGB_LOG_SHELL, "settings: open downloads %s", dir);
+            ShellExecuteA(NULL, "open", dir, NULL, NULL, SW_SHOWNORMAL);
+        }
+    }
+
+    settingsSendAll(view);
+}
+
 static void showMainMenu(void)
 {
     UiMenu root;
@@ -4078,7 +4348,7 @@ static void showMainMenu(void)
      * submenu itself is one click away and the check mark is only visible after
      * opening it. */
     uiMenuAdd(&root, "Theme", themePrefLabel(g_themePref), 0, 0, UI_MENU_ICON_NONE, &theme);
-    /* Settings has no page yet; about:blank is the honest placeholder. */
+    /* Settings is a real page now (minishell://settings). */
     uiMenuAdd(&root, "Settings", NULL, 11, 0, UI_MENU_ICON_NONE, NULL);
 
     /* Chrome anchors the app menu under the button, right edges aligned. */
@@ -4143,7 +4413,7 @@ static void showMainMenu(void)
     /* Chrome opens both of these in a new tab; Ctrl+J does the same thing for
      * downloads, so the menu entry and the shortcut cannot drift apart. */
     case 10: navigateActive("minishell://downloads", 1, "menu downloads"); break;
-    case 11: navigateActive("about:blank", 1, "menu settings"); break;
+    case 11: navigateActive("minishell://settings", 1, "menu settings"); break;
     case 20: applyThemePref(SHELL_THEME_SYSTEM); break;
     case 21: applyThemePref(SHELL_THEME_LIGHT); break;
     case 22: applyThemePref(SHELL_THEME_DARK); break;
@@ -6268,6 +6538,13 @@ static void probeOnMessage(AgaveWebView* view, const char* message, void* user)
      * the engine thread. */
     if (message && !strncmp(message, "__agb_evaldone__", 16)) {
         PostMessageA(g_probeWnd, AGW_PROBE_EVALDONE, 0, 0);
+        return;
+    }
+
+    /* minishell://settings asks for its values; the probe answers with the same
+     * code the shell uses, so the page can be verified headlessly. */
+    if (message && !strncmp(message, "__agb_settings_get__", 20)) {
+        settingsSendAll(g_probeView);
         return;
     }
 
@@ -10198,7 +10475,7 @@ static ShellWindow* createShellWindow(const char* title)
 
     memset(win, 0, sizeof(*win));
     win->used = 1;
-    win->zoom = 100;
+    win->zoom = g_prefs.zoom > 0 ? g_prefs.zoom : 100;
     ++g_shellWindows;
     g_cur = win;
 
@@ -10918,10 +11195,13 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR commandLine, 
         strncpy(initial, g_startupUrl, sizeof(initial) - 1);
         initial[sizeof(initial) - 1] = 0;
         agbLog(AGB_LOG_SHELL, "startup url from argv: %s", initial);
-    } else {
+    } else if (g_prefs.restore) {
         restored = loadSession(session, 8);
         strcpy(initial, restored > 0 ? session[0] : "http://www.163.com");
         agbLog(AGB_LOG_SHELL, "session restored tabs=%d first=%s", restored, initial);
+    } else {
+        strcpy(initial, "http://www.163.com");
+        agbLog(AGB_LOG_SHELL, "session restore is off (settings), starting at %s", initial);
     }
 
     if (restored > 1) {

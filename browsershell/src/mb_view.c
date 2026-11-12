@@ -1768,6 +1768,119 @@ static void loadDownloadsPage(MbView* v)
     free(html);
 }
 
+/* minishell://settings: a static page whose controls talk to the shell over
+ * agavePostMessage ("__agb_settings_*__"); the shell answers with
+ * "__agb_settings__key=value" through window.onAgaveMessage, one value per
+ * message, so the page needs no JSON parser. The palette follows
+ * prefers-color-scheme until the shell sends its own theme choice. */
+static const char kSettingsHtml[] =
+"<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+"<meta name=\"color-scheme\" content=\"light dark\">"
+"<title>Settings</title><style>"
+":root{--bg:#fff;--fg:#202124;--muted:#5f6368;--line:#e8eaed;--card:#f8f9fa;--accent:#1a73e8}"
+"@media (prefers-color-scheme:dark){:root{--bg:#202124;--fg:#e8eaed;--muted:#9aa0a6;"
+"--line:#3c4043;--card:#292a2d;--accent:#8ab4f8}}"
+"html[data-theme=light]{--bg:#fff;--fg:#202124;--muted:#5f6368;--line:#e8eaed;"
+"--card:#f8f9fa;--accent:#1a73e8}"
+"html[data-theme=dark]{--bg:#202124;--fg:#e8eaed;--muted:#9aa0a6;--line:#3c4043;"
+"--card:#292a2d;--accent:#8ab4f8}"
+"*{box-sizing:border-box}"
+"body{font:14px/1.6 'Segoe UI',system-ui,sans-serif;margin:0;padding:28px 32px;"
+"background:var(--bg);color:var(--fg)}"
+"h1{font-size:20px;margin:0 0 2px}"
+"p.sub{color:var(--muted);margin:0 0 20px}"
+"section{border:1px solid var(--line);border-radius:10px;padding:12px 16px;"
+"margin:0 0 14px;max-width:680px;background:var(--card)}"
+"h2{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);"
+"margin:0 0 8px;font-weight:600}"
+".row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:7px 0}"
+".row+.row{border-top:1px solid var(--line)}"
+"label.opt{display:inline-flex;align-items:center;gap:6px;margin-right:16px;cursor:pointer}"
+"select{font:inherit;padding:3px 8px;border-radius:6px;border:1px solid var(--line);"
+"background:var(--bg);color:var(--fg)}"
+"button{font:inherit;padding:5px 12px;border-radius:6px;border:1px solid var(--line);"
+"background:var(--bg);color:var(--fg);cursor:pointer}"
+"button:hover{border-color:var(--accent);color:var(--accent)}"
+"code{font:12px Consolas,monospace;color:var(--muted);word-break:break-all}"
+"</style></head><body>"
+"<h1>Settings</h1><p class=\"sub\">Changes apply immediately and are saved to the profile.</p>"
+
+"<section><h2>Appearance</h2><div class=\"row\"><div>"
+"<label class=\"opt\"><input type=\"radio\" name=\"theme\" value=\"system\">System</label>"
+"<label class=\"opt\"><input type=\"radio\" name=\"theme\" value=\"light\">Light</label>"
+"<label class=\"opt\"><input type=\"radio\" name=\"theme\" value=\"dark\">Dark</label>"
+"</div></div></section>"
+
+"<section><h2>Search</h2><div class=\"row\"><div>Engine used by the address bar</div>"
+"<select id=\"search\"><option value=\"baidu\">Baidu</option>"
+"<option value=\"bing\">Bing</option><option value=\"google\">Google</option>"
+"<option value=\"duckduckgo\">DuckDuckGo</option></select></div></section>"
+
+"<section><h2>Pages</h2>"
+"<div class=\"row\"><div>Default zoom for new tabs</div>"
+"<select id=\"zoom\"><option>75</option><option>90</option><option>100</option>"
+"<option>110</option><option>125</option><option>150</option></select></div>"
+"<div class=\"row\"><div>Reopen the tabs from the last session</div>"
+"<input type=\"checkbox\" id=\"restore\"></div></section>"
+
+"<section><h2>Data</h2>"
+"<div class=\"row\"><div>History: <span id=\"history\">0</span> entries</div>"
+"<button id=\"clearHistory\">Clear history</button></div>"
+"<div class=\"row\"><div>Downloads folder<br><code id=\"downloads\"></code></div>"
+"<button id=\"openDownloads\">Open</button></div></section>"
+
+"<section><h2>About</h2><div class=\"row\"><div>MiniShell, <span id=\"version\"></span>"
+"<br><code id=\"profile\"></code></div></div></section>"
+
+"<script>"
+"function post(t){try{agavePostMessage(t)}catch(e){}}"
+"function set(k,v){post('__agb_settings_set__'+k+'='+v)}"
+"function show(k,v){"
+"if(k==='theme'){var r=document.querySelector('input[name=theme][value='+v+']');"
+"if(r)r.checked=true;document.documentElement.setAttribute('data-theme',v==='system'?'':v);}"
+"else if(k==='search'){document.getElementById('search').value=v;}"
+"else if(k==='zoom'){document.getElementById('zoom').value=v;}"
+"else if(k==='restore'){document.getElementById('restore').checked=(''+v==='1');}"
+"else if(k==='history'){document.getElementById('history').textContent=v;}"
+"else if(k==='downloads'){document.getElementById('downloads').textContent=v;}"
+"else if(k==='profile'){document.getElementById('profile').textContent=v;}"
+"else if(k==='version'){document.getElementById('version').textContent=v;}"
+"}"
+"window.onAgaveMessage=function(m){"
+"if(m.indexOf('__agb_settings__')!==0)return;"
+"var p=m.slice(16),i=p.indexOf('=');"
+"if(i>0)show(p.slice(0,i),p.slice(i+1));"
+"};"
+/* The shell injects agavePostMessage on document ready, i.e. after this script
+ * has run, so the first request has to wait for it instead of firing once and
+ * giving up (an inline post at parse time silently does nothing). */
+"function boot(){"
+"if(typeof agavePostMessage!=='function'){setTimeout(boot,60);return;}"
+"post('__agb_settings_get__');}"
+"function wire(){"
+"var t=document.querySelectorAll('input[name=theme]');"
+"for(var i=0;i<t.length;i++)t[i].addEventListener('change',function(){set('theme',this.value)});"
+"document.getElementById('search').addEventListener('change',function(){set('search',this.value)});"
+"document.getElementById('zoom').addEventListener('change',function(){set('zoom',this.value)});"
+"document.getElementById('restore').addEventListener('change',function(){"
+"set('restore',this.checked?1:0)});"
+"document.getElementById('clearHistory').addEventListener('click',function(){"
+"if(confirm('Clear the browsing history?'))post('__agb_settings_do__clear-history')});"
+"document.getElementById('openDownloads').addEventListener('click',function(){"
+"post('__agb_settings_do__open-downloads')});"
+"}"
+"if(document.readyState==='loading')"
+"document.addEventListener('DOMContentLoaded',wire);"
+"else wire();"
+"boot();"
+"</script></body></html>";
+
+static void loadSettingsPage(MbView* v)
+{
+    mbLoadHtmlWithBaseUrl(v->wv, kSettingsHtml, "minishell://settings");
+    postEvent(v, MBV_EV_PROGRESS, NULL, NULL, 100, 1);
+}
+
 static void markLoading(MbView* v, int percent)
 {
     if (!v || v->destroying)
@@ -1791,6 +1904,11 @@ void agave_webview_navigate(AgaveWebView* view, const char* url)
 
     if (!_strnicmp(url, "minishell://downloads", 21)) {
         loadDownloadsPage(v);
+        return;
+    }
+
+    if (!_strnicmp(url, "minishell://settings", 20)) {
+        loadSettingsPage(v);
         return;
     }
 
