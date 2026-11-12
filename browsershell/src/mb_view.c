@@ -2139,7 +2139,26 @@ static const char kFindJs[] =
     " if(!st.marks.length){try{agavePostMessage('__agb_findcount__0/0');}catch(e){}return;}"
     " st.index=st.index<0?(fwd?0:st.marks.length-1):(st.index+(fwd?1:-1)+st.marks.length)%%st.marks.length;"
     " for(var i=0;i<st.marks.length;i++)st.marks[i].style.outline=(i===st.index)?'2px solid #e8a000':'none';"
-    " st.marks[st.index].scrollIntoView({block:'center',inline:'nearest'});"
+    /* Bring the hit into view. scrollIntoView() is the answer for anything that
+     * is laid out in the flow, but it silently does nothing when the match sits
+     * in a fixed/sticky subtree (the page has nothing to scroll), so the window
+     * is centred on the element's own offset as a fallback. */
+    " var cur=st.marks[st.index];"
+    " if(cur){"
+    "  var before=window.scrollY||window.pageYOffset||0;"
+    "  try{cur.scrollIntoView({block:'center',inline:'nearest'});}"
+    "  catch(e){try{cur.scrollIntoView();}catch(e2){}}"
+    "  var after=window.scrollY||window.pageYOffset||0;"
+    "  if(after===before){"
+    "   var rc=cur.getBoundingClientRect();"
+    "   var vh=window.innerHeight||document.documentElement.clientHeight||0;"
+    "   if(rc.top<0||rc.bottom>vh){"
+    "    var y=before+rc.top-Math.max(0,(vh-rc.height)/2);"
+    "    if(y<0)y=0;"
+    "    window.scrollTo(0,y);"
+    "   }"
+    "  }"
+    " }"
     " try{agavePostMessage('__agb_findcount__'+(st.index+1)+'/'+st.marks.length);}catch(e){}"
     "})();";
 
