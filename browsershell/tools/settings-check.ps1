@@ -14,12 +14,24 @@ $root = Split-Path $PSScriptRoot -Parent
 
 $eval = @'
 var t = document.querySelector('input[name=theme]:checked');
-probeExit('theme=' + (t ? t.value : 'none') +
-          '|search=' + document.getElementById('search').value +
-          '|zoom=' + document.getElementById('zoom').value +
+var s = document.getElementById('searchDD');
+var z = document.getElementById('zoomDD');
+var theme = t ? t.value : 'none';
+var search = s ? s.getAttribute('data-value') : '';
+var zoom = z ? z.getAttribute('data-value') : '';
+/* The custom dropdown must open on the first click and pick on one click
+ * (the native <select> popup needed two and landed in the wrong place). */
+var btn = s.querySelector('.dd-btn');
+btn.click();
+var ddOpen = s.classList.contains('open');
+s.querySelector('.dd-item[data-value=bing]').click();
+var ddPick = s.getAttribute('data-value');
+var ddClosed = !s.classList.contains('open');
+probeExit('theme=' + theme + '|search=' + search + '|zoom=' + zoom +
           '|restore=' + document.getElementById('restore').checked +
           '|version=' + document.getElementById('version').textContent +
-          '|downloads=' + document.getElementById('downloads').textContent);
+          '|downloads=' + document.getElementById('downloads').textContent +
+          '|ddOpen=' + ddOpen + '|ddPick=' + ddPick + '|ddClosed=' + ddClosed);
 '@
 
 $evalFile = Join-Path $env:TEMP 'mb-settings-check.js'
@@ -50,6 +62,9 @@ if ($fields['zoom'] -notmatch '^(75|90|100|110|125|150)$') { $problems += "zoom=
 if ($fields['restore'] -notin @('true', 'false')) { $problems += "restore='$($fields['restore'])'" }
 if (-not $fields['version']) { $problems += 'version is empty (host never answered)' }
 if (-not $fields['downloads']) { $problems += 'downloads is empty (host never answered)' }
+if ($fields['ddOpen'] -ne 'true') { $problems += "dropdown did not open on the first click (ddOpen='$($fields['ddOpen'])')" }
+if ($fields['ddPick'] -ne 'bing') { $problems += "dropdown pick did not stick (ddPick='$($fields['ddPick'])')" }
+if ($fields['ddClosed'] -ne 'true') { $problems += 'dropdown stayed open after picking' }
 
 "settings page: $payload"
 "exit=$($out.exit) wall=$($out.seconds)s"
