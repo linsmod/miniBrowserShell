@@ -684,6 +684,15 @@ static void MB_CALL_TYPE mbvOnLoadingFinish(mbWebView wv, void* param,
           url ? url : "", failedReason ? failedReason : "");
     postEvent(v, MBV_EV_PROGRESS, NULL, NULL, 100, 1);
 
+    /* What the engine actually kept for this document: the page zoom is applied
+     * before the navigation (like a fresh tab) and the engine may replace it
+     * with the display scale while the document is created. If this line says
+     * 1.25 on a 125% display while a tab wants 1.0, the pre-load call was
+     * ignored and the zoom has to be re-applied once the document exists. */
+    agbLog(AGB_LOG_NAV, "page zoom: want=%.2f engine=%.3f url=%s",
+           (double)((float)(v->zoom > 0 ? v->zoom : 100) / 100.0f),
+           (double)mbGetZoomFactor(v->wv), v->url);
+
     /* A hard reload switched both caches off for its one request. */
     if (v->restoreCache) {
         v->restoreCache = 0;

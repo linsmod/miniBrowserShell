@@ -7215,10 +7215,17 @@ static int probeRun(const char* url)
     }
 
     /* --device-scale: a headless run has no monitor to ask, so the DPI the GUI
-     * would push through WM_DPICHANGED comes from the command line. Queued
-     * before the navigation, so the first layout already has it. */
+     * would push through WM_DPICHANGED comes from the command line. It only
+     * describes the environment (the settings page / logs report it); the page's
+     * devicePixelRatio comes from --zoom, like in the real shell. */
     if (g_probeDeviceScale > 100)
         agave_webview_set_device_scale(g_probeView, g_probeDeviceScale);
+
+    /* Match the GUI: createTabIn() applies the tab's page zoom before the first
+     * navigation, so a probe without --zoom must still pin 100% instead of
+     * leaving the engine's default (which follows the process DPI). */
+    agave_webview_set_zoom(g_probeView, g_probeZoom > 0 ? g_probeZoom : 100);
+    g_probeZoomDone = g_probeZoom > 0;
 
     /* AGB_PROBE_SHOW=1 shows the window; debugging aid for load paths that
      * behave differently when the control is never visible. A hidden window
@@ -7916,11 +7923,10 @@ static void probeUsage(void)
             "            after the page settled, then wait 400ms so the engine can\n"
             "            relayout before --eval reads the new viewport\n"
             "  --zoom <percent>  page zoom before --eval (10..500, default 100)\n"
-            "  --device-scale <percent>  display DPI for the page, as device pixels\n"
-            "            per CSS px in percent of 96 DPI (100..500, default 100).\n"
-            "            A GUI window passes its own DPI automatically; this is how\n"
-            "            a headless run exercises 125%%/150%%/200%% displays. It\n"
-            "            multiplies with --zoom (both feed window.devicePixelRatio)\n"
+            "  --device-scale <percent>  the display scale the shell reports (settings\n"
+            "            page, inspect log), as percent of 96 DPI. It does NOT feed\n"
+            "            window.devicePixelRatio: page zoom and the display are\n"
+            "            separate, and --zoom alone changes the page\n"
             "  --reload <n>  reload the page n times and run the eval after\n"
             "                every round (page lifecycle comparison)\n"
             "  --offline module fetches are served from the cache only\n"

@@ -36,6 +36,7 @@ MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webv
 | `tools/inspect_hang.ps1` | 卡死时挂 cdb 抓全部线程栈（只读，摘下后恢复） |
 | `tools/layered-dib-check.ps1` | 验证 `UpdateLayeredWindow` 的硬性条件：源 DC 里必须还选中着那块 DIB（未选中 → 失败 err=31） |
 | `tools/settings-check.ps1` | `minishell://settings` 的双向协议回归：页面请求 → 宿主回值 → 断言主题/搜索引擎/缩放/版本/下载目录都到位 |
+| `tools/zoom-check.ps1` | 页面缩放与显示缩放互不干扰：zoom 100 → dpr 1/innerWidth 1100（任何屏幕），zoom 125 → dpr 1.25/innerWidth 880 |
 | `tools/dlserver.ps1` | 下载/新窗口回归用的本地 HTTP 服务 |
 
 ## 引擎侧已知坑（会静默失败）
@@ -63,7 +64,14 @@ MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webv
 ## 构建
 
 ```powershell
+# 先杀掉残留进程：正在运行的 minishell.exe 会锁住 exe，链接报 LNK1104
+Get-Process minishell -ErrorAction SilentlyContinue | Stop-Process -Force
+Start-Sleep -Milliseconds 500
 cmake --build build-msvc --config Release
 ```
+
+exe 被占用又不想打断正在跑的实例时，可以配置另一个构建目录（`build*/` 已被忽略）：
+`cmake -S . -B build-check -G "Visual Studio 17 2022" -A x64` +
+`cmake --build build-check --config Release`，跑脚本时用 `-Exe build-check\Release\minishell.exe`。
 
 改 DLL 后重生成导入库：`pwsh -File tools\gen_import_lib.ps1`。
