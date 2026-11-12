@@ -234,20 +234,31 @@ void uiChromeLayout(UiChrome* chrome, int width, int height)
     /* The find bar floats over the top-right of the page: it does not take a row
      * of its own (the page used to shift down by find_h whenever it opened).
      * The rect is in shell-client coordinates; the shell puts an overlay child
-     * window exactly there and the native EDIT inside it. */
+     * window exactly there and the native EDIT inside it.
+     *
+     * Chrome's shape (the reference): a white rounded card, a grey query pill
+     * inside it, the "3/12" counter, a hairline, then prev / next / close. The
+     * card used to *be* the pill, so the query, the counter and the buttons all
+     * shared one grey capsule. */
     if (model->find_visible && chrome->content.w > scale(theme, 160)) {
-        int card_w = theme->find_field_w + uiThemeScale(theme, 24);
-        int card_h = theme->find_field_h + uiThemeScale(theme, 8);
-        int bs = scale(theme, 28);
+        int cardPad = scale(theme, 8);              /* padding inside the card */
+        int gap = scale(theme, 8);                  /* between the blocks */
+        int bs = scale(theme, 28);                  /* icon button */
+        int card_h = theme->find_field_h + cardPad * 2;
+        int field_h = card_h - cardPad * 2;
+        int count_w = scale(theme, 44);             /* "12/34" */
+        int card_w;
         int right;
-        int left;
+
+        card_w = cardPad + theme->find_field_w + gap + count_w + gap +
+                 scale(theme, 1) + gap + bs * 3 + cardPad;
 
         if (card_w > chrome->content.w - pad * 2)
             card_w = chrome->content.w - pad * 2;
-        if (card_w < scale(theme, 160))
-            card_w = scale(theme, 160);
-        if (card_h < scale(theme, 30))
-            card_h = scale(theme, 30);
+        if (card_w < scale(theme, 200))
+            card_w = scale(theme, 200);
+        if (card_h < scale(theme, 32))
+            card_h = scale(theme, 32);
 
         chrome->findbar.rect = uiRectMake(
             chrome->content.x + chrome->content.w - pad - card_w,
@@ -256,8 +267,9 @@ void uiChromeLayout(UiChrome* chrome, int width, int height)
         if (chrome->findbar.rect.x < chrome->content.x + pad)
             chrome->findbar.rect.x = chrome->content.x + pad;
 
-        right = chrome->findbar.rect.x + chrome->findbar.rect.w - scale(theme, 6);
-        left = chrome->findbar.rect.x + scale(theme, 11) + scale(theme, 16) + scale(theme, 8);
+        /* Right to left: close, next, prev, hairline, counter, then the pill
+         * takes whatever is left. */
+        right = chrome->findbar.rect.x + chrome->findbar.rect.w - cardPad;
 
         chrome->findbar.close.rect = uiRectMake(right - bs,
                                                 chrome->findbar.rect.y +
@@ -270,14 +282,30 @@ void uiChromeLayout(UiChrome* chrome, int width, int height)
         chrome->findbar.prev.rect = uiRectMake(right - bs,
                                                chrome->findbar.rect.y +
                                                    (card_h - bs) / 2, bs, bs);
-        right -= scale(theme, 4);
+        right -= bs + gap;
 
-        /* The pill's own rect is the card; the native EDIT sits inside it. */
-        chrome->findbar.field = chrome->findbar.rect;
-        chrome->findbar.edit = uiRectMake(left,
-                                          chrome->findbar.rect.y +
-                                              (card_h - scale(theme, 20)) / 2,
-                                          right - left, scale(theme, 20));
+        chrome->findbar.sep = uiRectMake(right - scale(theme, 1),
+                                         chrome->findbar.rect.y + cardPad + scale(theme, 5),
+                                         scale(theme, 1),
+                                         card_h - (cardPad + scale(theme, 5)) * 2);
+        right -= scale(theme, 1) + gap;
+
+        chrome->findbar.count = uiRectMake(right - count_w,
+                                           chrome->findbar.rect.y, count_w, card_h);
+        right -= count_w + gap;
+
+        chrome->findbar.field = uiRectMake(chrome->findbar.rect.x + cardPad,
+                                            chrome->findbar.rect.y + cardPad,
+                                            right - (chrome->findbar.rect.x + cardPad),
+                                            field_h);
+        if (chrome->findbar.field.w < scale(theme, 60))
+            chrome->findbar.field.w = scale(theme, 60);
+
+        /* The native EDIT sits inside the pill, inset like Chrome's text. */
+        chrome->findbar.edit = uiRectMake(chrome->findbar.field.x + scale(theme, 8),
+                                          chrome->findbar.field.y,
+                                          chrome->findbar.field.w - scale(theme, 16),
+                                          field_h);
 
         if (chrome->findbar.edit.w < scale(theme, 40))
             chrome->findbar.edit.w = scale(theme, 40);
@@ -438,10 +466,11 @@ static void paintToolbar(UiChrome* chrome, UiPainter* painter)
     }
 }
 
-/* Chrome's find bar is an overlay on the page: one rounded card with the query
- * on the left and three buttons on the right. It is painted into the shell's
- * overlay child window (see uiChromePaintFindOverlay), not into the chrome, so
- * the (dx, dy) offset maps its shell-client rects onto that window's origin. */
+/* Chrome's find bar: a white rounded card holding a grey query pill, the match
+ * counter, a hairline, and the three icon buttons. It is painted into the
+ * shell's overlay child window (see uiChromePaintFindOverlay), not into the
+ * chrome, so the (dx, dy) offset maps its shell-client rects onto that window's
+ * origin. */
 static void paintFindBar(UiChrome* chrome, UiPainter* painter, int dx, int dy)
 {
     UiTheme* theme = &chrome->theme;
@@ -453,39 +482,64 @@ static void paintFindBar(UiChrome* chrome, UiPainter* painter, int dx, int dy)
     int focused = state == 2;
     int hovered = state == 1;
     int radius;
+    int field_radius;
     UiRect card;
+    UiRect field;
+    UiRect count;
+    char label[32];
 
     if (!chrome->model.find_visible || bar->rect.w <= 0 || bar->rect.h <= 0)
         return;
 
     card = uiRectMake(bar->rect.x + dx, bar->rect.y + dy, bar->rect.w, bar->rect.h);
-    radius = bar->rect.h / 2;
+    field = uiRectMake(bar->field.x + dx, bar->field.y + dy, bar->field.w, bar->field.h);
+    count = uiRectMake(bar->count.x + dx, bar->count.y + dy, bar->count.w, bar->count.h);
+    radius = scale(theme, 8);
+    field_radius = scale(theme, 4);
 
-    uiFillRoundRect(painter, card, radius,
+    /* The card follows the active tab's surface, like the status bubble. */
+    uiFillRoundRect(painter, card, radius, theme->surface);
+    uiStrokeRoundRect(painter, card, radius, theme->border, 1.0f);
+
+    uiFillRoundRect(painter, field, field_radius,
                     focused ? theme->field_focus
                             : (hovered ? theme->field_hover : theme->field));
 
     if (focused)
-        uiStrokeRoundRect(painter, card, radius, theme->focus_ring,
+        uiStrokeRoundRect(painter, field, field_radius, theme->focus_ring,
                           (float)scale(theme, 2));
-    else
-        uiStrokeRoundRect(painter, card, radius, theme->border, 1.0f);
-
-    uiIcon(painter, UI_ICON_SEARCH,
-           uiRectMake(card.x + scale(theme, 11),
-                      card.y + (card.h - scale(theme, 16)) / 2,
-                      scale(theme, 16), scale(theme, 16)),
-           theme->icon, (1.5f * theme->scale));
 
     if (chrome->offscreen || !chrome->find_hwnd) {
         const char* text = chrome->model.find_text[0] ? chrome->model.find_text
-                                                      : "Find in page";
-        UiRect text_rect = uiRectMake(bar->edit.x + dx, card.y,
-                                      bar->edit.w, card.h);
+                                                     : "Find in page";
+        UiRect text_rect = uiRectMake(field.x + scale(theme, 8), field.y,
+                                      field.w - scale(theme, 16), field.h);
 
         uiText(painter, text, text_rect, theme->font_ui,
-               chrome->model.find_text[0] ? theme->text : theme->text_faint, UI_ALIGN_LEFT);
+               chrome->model.find_text[0] ? theme->text : theme->text_faint,
+               UI_ALIGN_LEFT);
     }
+
+    /* "3/12", or "0/0" while nothing matches - the same shape Chrome shows. */
+    if (chrome->model.find_total > 0) {
+        int index = chrome->model.find_index;
+
+        if (index < 1)
+            index = 1;
+        if (index > chrome->model.find_total)
+            index = chrome->model.find_total;
+
+        _snprintf(label, sizeof(label), "%d/%d", index, chrome->model.find_total);
+    } else {
+        _snprintf(label, sizeof(label), "0/0");
+    }
+    label[sizeof(label) - 1] = 0;
+
+    uiText(painter, label, count, theme->font_ui, theme->text_muted, UI_ALIGN_CENTER);
+
+    if (bar->sep.w > 0)
+        uiFillRect(painter, uiRectMake(bar->sep.x + dx, bar->sep.y + dy,
+                                       bar->sep.w, bar->sep.h), theme->border);
 
     prev.rect.x += dx;  prev.rect.y += dy;
     next.rect.x += dx;  next.rect.y += dy;
@@ -723,10 +777,16 @@ static UiRect partRect(UiChrome* chrome, UiPart part, int index)
     case UI_PART_ADDRESS:  return bar->address;
 
     case UI_PART_FIND_FIELD:
-    case UI_PART_FIND_PREV:
-    case UI_PART_FIND_NEXT:
-    case UI_PART_FIND_CLOSE:
         return find->field;
+
+    case UI_PART_FIND_PREV:
+        return find->prev.rect;
+
+    case UI_PART_FIND_NEXT:
+        return find->next.rect;
+
+    case UI_PART_FIND_CLOSE:
+        return find->close.rect;
 
     case UI_PART_STATUS:       return chrome->statusbar.rect;
     case UI_PART_WINDOW_MIN:   return chrome->win_min.rect;

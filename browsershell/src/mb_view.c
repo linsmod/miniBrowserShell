@@ -2109,7 +2109,7 @@ static const char kFindJs[] =
     "  st.marks=[];st.index=-1;st.text='';"
     " }"
     " if(!st)st=window.__mbFindState={text:'',cs:-1,marks:[],index:-1};"
-    " if(!q){clear();return;}"
+    " if(!q){clear();try{agavePostMessage('__agb_findcount__0/0');}catch(e){}return;}"
     " if(st.text!==q||st.cs!==cs){clear();st.text=q;st.cs=cs;}"
     " if(!st.marks.length){"
     "  var needle=cs?q:q.toLowerCase();"
@@ -2136,10 +2136,11 @@ static const char kFindJs[] =
     "    if(from<text.length)frag.appendChild(document.createTextNode(text.slice(from)));"
     "    node.parentNode.replaceChild(frag,node);}}"
     " }"
-    " if(!st.marks.length)return;"
+    " if(!st.marks.length){try{agavePostMessage('__agb_findcount__0/0');}catch(e){}return;}"
     " st.index=st.index<0?(fwd?0:st.marks.length-1):(st.index+(fwd?1:-1)+st.marks.length)%%st.marks.length;"
     " for(var i=0;i<st.marks.length;i++)st.marks[i].style.outline=(i===st.index)?'2px solid #e8a000':'none';"
     " st.marks[st.index].scrollIntoView({block:'center',inline:'nearest'});"
+    " try{agavePostMessage('__agb_findcount__'+(st.index+1)+'/'+st.marks.length);}catch(e){}"
     "})();";
 
 int agave_webview_search(AgaveWebView* view, const char* text, int forward, int case_sensitive)

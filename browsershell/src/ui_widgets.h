@@ -35,6 +35,8 @@ typedef struct {
     int        zoom;            /* percent */
     int        find_visible;
     char       find_text[256];
+    int        find_index;      /* 1-based current match, 0 = none */
+    int        find_total;      /* matches in the page, 0 = none */
     int        maximized;       /* paint restore instead of maximize */
 } UiChromeModel;
 

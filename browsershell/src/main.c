@@ -165,6 +165,12 @@ static int          g_shellWindows; /* used entries in g_windows */
 #define g_findVisible (g_cur->findVisible)
 #define g_minimized   (g_cur->minimized)
 #define g_status      (g_cur->status)
+
+/* Find match counter, reported by the page's find script
+ * ("__agb_findcount__3/12"). Process-wide: one find bar at a time. */
+static int  g_findIndex;
+static int  g_findTotal;
+static char g_findQuery[256];      /* text of the last searched query */
 #define g_closed      (g_cur->closed)
 #define g_closedCount (g_cur->closedCount)
 
@@ -833,6 +839,8 @@ static void syncChrome(void)
     _snprintf(model->status, sizeof(model->status), "%s", g_status);
     model->zoom = g_zoom;
     model->find_visible = g_findVisible;
+    model->find_index = g_findIndex;
+    model->find_total = g_findTotal;
     model->maximized = g_hwnd && IsZoomed(g_hwnd) ? 1 : 0;
 
     if (g_findVisible && g_findEdit)
@@ -1466,6 +1474,21 @@ static void onPageMessage(AgaveWebView* view, const char* message, void* user)
         return;
 
     enterTabWindow(tab);
+
+    /* Find counter from the page's find script: "3/12", or "0/0" when nothing
+     * matched. Only the overlay is repainted, so typing is not disturbed. */
+    if (!strncmp(message, "__agb_findcount__", 17) && g_findVisible) {
+        int index = 0;
+        int total = 0;
+
+        if (sscanf(message + 17, "%d/%d", &index, &total) == 2) {
+            g_findIndex = index;
+            g_findTotal = total;
+            syncChrome();
+            invalidateFindOverlay();
+        }
+        return;
+    }
 
     /* Inspect probe: "<device x,y,w,h>|<css x,y,w,h>|<dpr>|<label>|<selector>".
      * The mark is placed in device pixels and the page already did that scaling
@@ -3785,11 +3808,20 @@ static void addBookmarkCurrent(void)
     updateStatus();
 }
 
+static void findQueryChanged(void);
+
 static void toggleFind(void)
 {
     g_findVisible = !g_findVisible;
 
     agbLog(AGB_LOG_SHELL, "find bar %s", g_findVisible ? "on" : "off");
+
+    /* The counter belongs to the query that produced it: opening a bar or
+     * closing it starts from "0/0" until the page answers. The query text is
+     * re-searched on open so the bar never shows highlights without a count. */
+    g_findIndex = 0;
+    g_findTotal = 0;
+    g_findQuery[0] = 0;
 
     /* The find bar is painted by UiChrome now; only the native EDIT is shown or
      * hidden, and the layout follows the model's find_visible flag. */
@@ -3802,6 +3834,10 @@ static void toggleFind(void)
         releasePageFocus();
         g_focusOwner = FOCUS_FIND;
         SetFocus(g_findEdit);
+
+        /* Re-run whatever is in the field: the marks in the page may belong to
+         * a previous session, and the counter must match what is highlighted. */
+        findQueryChanged();
     } else {
         focusPage();
     }
@@ -3840,10 +3876,41 @@ static void doFind(int forward)
         return;
     }
 
-    /* The engine gives no "hits" back, so this line is the only evidence that
-     * the search reached the page at all. */
+    strncpy(g_findQuery, text, sizeof(g_findQuery) - 1);
+    g_findQuery[sizeof(g_findQuery) - 1] = 0;
+
+    /* The engine gives no "hits" back; the page's find script reports the
+     * counter over "__agb_findcount__" once it has counted the matches. */
     agbLog(AGB_LOG_SHELL, "find text='%s' forward=%d", text, forward);
     agave_webview_search(tab->view, text, forward, 0);
+}
+
+/* Search as you type, like Chrome: without it the counter and the highlights
+ * only changed after pressing Enter, so the bar looked dead while typing. */
+static void findQueryChanged(void)
+{
+    char text[256];
+    Tab* tab = &g_tabs[g_activeTab];
+
+    if (!g_findVisible || !tab->used || !tab->view)
+        return;
+
+    readControlText(g_findEdit, text, sizeof(text));
+
+    if (strcmp(text, g_findQuery) == 0)
+        return;
+
+    strncpy(g_findQuery, text, sizeof(g_findQuery) - 1);
+    g_findQuery[sizeof(g_findQuery) - 1] = 0;
+
+    g_findIndex = 0;
+    g_findTotal = 0;
+
+    /* An empty query clears the highlights in the page. */
+    agave_webview_search(tab->view, text, 1, 0);
+
+    syncChrome();
+    invalidateFindOverlay();
 }
 
 /* One place that clamps, applies and logs the zoom: it used to be four copies of
@@ -5163,6 +5230,13 @@ static LRESULT CALLBACK shellProcInner(HWND hwnd, UINT message, WPARAM wParam, L
             syncFieldBackgrounds();
             /* The find bar paints its own focus ring in the overlay window. */
             invalidateFindOverlay();
+            return 0;
+        }
+
+        /* Search as you type: the query field is the only EDIT with a live
+         * search behind it. */
+        if (id == ID_FIND_EDIT && note == EN_CHANGE) {
+            findQueryChanged();
             return 0;
         }
 
@@ -8443,11 +8517,37 @@ static int uiShotMain(void)
                          : chrome.hover_part == UI_PART_FIND_FIELD ? chrome.theme.field_hover
                          : chrome.theme.field;
 
+                    /* Chrome's shape: the card is the active-tab surface, the
+                     * query pill inside it carries the field colour. */
+                    uiCheck("pixel-find-card-bg",
+                            sameColor(shotPixel((const unsigned char*)cardBits,
+                                                card->w, card->h,
+                                                card->w / 2, 3),
+                                      chrome.theme.surface));
                     uiCheck("pixel-find-card",
                             sameColor(shotPixel((const unsigned char*)cardBits,
                                                 card->w, card->h,
-                                                card->w / 2, card->h / 2), want));
+                                                chrome.findbar.field.x - card->x +
+                                                    chrome.findbar.field.w / 2,
+                                                chrome.findbar.field.y - card->y +
+                                                    chrome.findbar.field.h / 2),
+                                      want));
                     SelectObject(cardDc, cardOld);
+
+                    /* Handy for eyeballing the bar without a GUI: a sibling PNG
+                     * of the card, exactly as the overlay window gets it. */
+                    if (probeShotFormat(g_uiShotPath) == PROBE_SHOT_PNG) {
+                        char path[MAX_PATH];
+                        int n;
+
+                        n = _snprintf(path, sizeof(path) - 1, "%s-find.png", g_uiShotPath);
+                        if (n > 0 && n < (int)sizeof(path)) {
+                            path[sizeof(path) - 1] = 0;
+                            probeWritePng(path, (const unsigned char*)cardBits,
+                                          card->w, card->h, card->w * 4, 0, 0,
+                                          card->w, card->h);
+                        }
+                    }
                 } else {
                     uiCheck("pixel-find-card", 0);
                 }

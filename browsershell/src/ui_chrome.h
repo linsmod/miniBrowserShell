@@ -52,9 +52,11 @@ typedef struct {
 } UiToolbar;
 
 typedef struct {
-    UiRect rect;
-    UiRect field;
-    UiRect edit;
+    UiRect rect;        /* the card */
+    UiRect field;       /* the query pill inside it */
+    UiRect edit;        /* where the native EDIT goes */
+    UiRect count;       /* "3/12" */
+    UiRect sep;         /* hairline between the count and the buttons */
     UiButton prev;
     UiButton next;
     UiButton close;
