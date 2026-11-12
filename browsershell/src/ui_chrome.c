@@ -301,11 +301,17 @@ void uiChromeLayout(UiChrome* chrome, int width, int height)
         if (chrome->findbar.field.w < scale(theme, 60))
             chrome->findbar.field.w = scale(theme, 60);
 
-        /* The native EDIT sits inside the pill, inset like Chrome's text. */
+        /* The native EDIT is placed exactly like the address one: a 20 DIP box
+         * centred inside the pill, so the pill's own fill (and its rounded
+         * ends) stay visible around it. Filling the whole pill height made the
+         * EDIT a square block that covered the pill's shape, which is what read
+         * as "a strange colour" as soon as the two fills differed by a state
+         * step (hover / focus). */
         chrome->findbar.edit = uiRectMake(chrome->findbar.field.x + scale(theme, 8),
-                                          chrome->findbar.field.y,
+                                          chrome->findbar.field.y +
+                                              (field_h - scale(theme, 20)) / 2,
                                           chrome->findbar.field.w - scale(theme, 16),
-                                          field_h);
+                                          scale(theme, 20));
 
         if (chrome->findbar.edit.w < scale(theme, 40))
             chrome->findbar.edit.w = scale(theme, 40);
@@ -520,9 +526,16 @@ static void paintFindBar(UiChrome* chrome, UiPainter* painter, int dx, int dy)
                     focused ? theme->field_focus
                             : (hovered ? theme->field_hover : theme->field));
 
+    /* Same stroke logic as the address pill: a hairline when idle, the stronger
+     * border on hover, the focus ring when the native EDIT owns the keyboard.
+     * Without it a focused field turned white on a white card and read as a
+     * hole rather than an input. */
     if (focused)
         uiStrokeRoundRect(painter, field, field_radius, theme->focus_ring,
                           (float)scale(theme, 2));
+    else
+        uiStrokeRoundRect(painter, field, field_radius,
+                          hovered ? theme->border_strong : theme->border, 1.0f);
 
     if (chrome->offscreen || !chrome->find_hwnd) {
         const char* text = chrome->model.find_text[0] ? chrome->model.find_text

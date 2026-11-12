@@ -8492,6 +8492,17 @@ static int uiShotMain(void)
                     findEdit->x >= card->x && findEdit->y >= card->y &&
                     findEdit->x + findEdit->w <= card->x + card->w &&
                     findEdit->y + findEdit->h <= card->y + card->h);
+
+            /* Same geometry rule as the address field: the EDIT is a box inside
+             * the pill, never flush with it, so the pill's shape shows around
+             * the text instead of being covered by a square block. */
+            uiCheck("find-edit-inset",
+                    findEdit->y > chrome.findbar.field.y &&
+                    findEdit->y + findEdit->h <
+                        chrome.findbar.field.y + chrome.findbar.field.h &&
+                    findEdit->x > chrome.findbar.field.x &&
+                    findEdit->x + findEdit->w <
+                        chrome.findbar.field.x + chrome.findbar.field.w);
             uiCheck("find-overlay-below-toolbar",
                     card->y >= chrome.toolbar.rect.y + chrome.toolbar.rect.h);
 
