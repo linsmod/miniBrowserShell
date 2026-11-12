@@ -2099,6 +2099,28 @@ int agave_webview_editor_command(AgaveWebView* view, const char* command)
     return 1;
 }
 
+/* The engine's zoom knob is not "page zoom" alone: mbSetZoomFactor() sets the
+ * control's device scale factor, i.e. window.devicePixelRatio becomes exactly
+ * the value passed (measured: 125% display + factor 1.0 -> dpr 1.0). Feeding it
+ * the bare page zoom therefore wipes the system scaling out - Ctrl+0 (zoom 100%)
+ * made the page 25% *smaller* on a 125% monitor.
+ *
+ * System scaling and page zoom stay separate in this API; the engine only ever
+ * sees their product. */
+static void viewApplyEngineScale(MbView* v)
+{
+    float pageZoom;
+    float scale;
+
+    if (!v || v->destroying || !v->wv)
+        return;
+
+    pageZoom = (float)(v->zoom > 0 ? v->zoom : 100) / 100.0f;
+    scale = (float)(v->deviceScale > 0 ? v->deviceScale : 100) / 100.0f;
+
+    mbSetZoomFactor(v->wv, pageZoom * scale);
+}
+
 void agave_webview_set_zoom(AgaveWebView* view, int percent)
 {
     MbView* v = (MbView*)view;
@@ -2106,7 +2128,7 @@ void agave_webview_set_zoom(AgaveWebView* view, int percent)
     if (!v || percent <= 0)
         return;
     v->zoom = percent;
-    mbSetZoomFactor(v->wv, (float)percent / 100.0f);
+    viewApplyEngineScale(v);
 }
 
 int agave_webview_zoom(AgaveWebView* view)
@@ -2117,11 +2139,12 @@ int agave_webview_zoom(AgaveWebView* view)
 void agave_webview_set_device_scale(AgaveWebView* view, int percent)
 {
     MbView* v = (MbView*)view;
-    if (!v)
+    if (!v || percent <= 0)
         return;
-    /* miniblink follows the process DPI (mbEnableHighDPISupport); the shell's
-     * device scale is remembered so a future backend can apply it. */
+    /* System scaling: remembered for the shell (rect reporting, inspect) and
+     * folded into the engine's scale together with the page zoom. */
     v->deviceScale = percent;
+    viewApplyEngineScale(v);
 }
 
 int agave_webview_device_scale(AgaveWebView* view)
