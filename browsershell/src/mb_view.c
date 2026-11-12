@@ -2111,6 +2111,16 @@ static const char kFindJs[] =
     " if(!st)st=window.__mbFindState={text:'',cs:-1,marks:[],index:-1};"
     " if(!q){clear();try{agavePostMessage('__agb_findcount__0/0');}catch(e){}return;}"
     " if(st.text!==q||st.cs!==cs){clear();st.text=q;st.cs=cs;}"
+    /* Marks can disappear behind our back: a SPA replaces the subtree, the page
+     * re-renders, an infinite list recycles nodes. A detached mark has no
+     * position, so counting it (or scrolling to it) is wrong - drop those and
+     * let the scan below re-create the real ones. */
+    " if(st.marks.length){"
+    "  var docEl=document.documentElement;"
+    "  for(var d=st.marks.length-1;d>=0;d--)"
+    "   if(!docEl.contains(st.marks[d]))st.marks.splice(d,1);"
+    "  if(!st.marks.length)st.index=-1;"
+    " }"
     " if(!st.marks.length){"
     "  var needle=cs?q:q.toLowerCase();"
     "  var walker=document.createTreeWalker(document.body||document.documentElement,NodeFilter.SHOW_TEXT,"
