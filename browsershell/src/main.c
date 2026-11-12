@@ -4213,6 +4213,12 @@ static void syncFieldBackgrounds(void)
         InvalidateRect(g_address, NULL, FALSE);
     if (g_findEdit && IsWindowVisible(g_findEdit))
         InvalidateRect(g_findEdit, NULL, FALSE);
+
+    /* The find bar's field is painted by its own overlay window, so it needs the
+     * same treatment as the native controls: a state change has to reach it or
+     * the pill and the EDIT end up in two different fills. */
+    if (g_cur && g_cur->findBar)
+        InvalidateRect(g_cur->findBar, NULL, FALSE);
 }
 
 static void invalidateChromeDirty(HWND hwnd)
@@ -4353,6 +4359,15 @@ static LRESULT CALLBACK pillEditProc(HWND hwnd, UINT message, WPARAM wParam, LPA
 
             InvalidateRect(win->hwnd, &rect, FALSE);
             InvalidateRect(hwnd, NULL, FALSE);
+
+            /* The hover belongs to the field, and the find bar's field is drawn
+             * by its own overlay window - a sibling the shell's invalidation
+             * never reaches. Without this the pill kept the idle fill while the
+             * EDIT switched to the hover fill: two backgrounds inside one
+             * field. (The address field has no separate window, which is why it
+             * never showed this.) */
+            if (win->findBar && dirtyHits(dirty, win->chrome.findbar.field))
+                InvalidateRect(win->findBar, NULL, FALSE);
         }
 
         if (message == WM_MOUSEMOVE) {
@@ -9620,9 +9635,24 @@ static LRESULT CALLBACK findBarProc(HWND hwnd, UINT message, WPARAM wParam, LPAR
         if (message == WM_MOUSEMOVE) {
             event.type = UI_MOUSE_MOVE;
         } else if (message == WM_MOUSELEAVE) {
-            event.type = UI_MOUSE_LEAVE;
-            event.x = 0;
-            event.y = 0;
+            int sx = 0;
+            int sy = 0;
+
+            /* The pointer may only have moved onto the native EDIT, which sits
+             * above this window as a sibling: keep the hover instead of clearing
+             * it and letting the EDIT's forwarded move set it again (the same
+             * trick the shell's own leave handler uses). Clearing it here was
+             * what left the pill idle-coloured while the EDIT used the hover
+             * fill. */
+            if (win && cursorInClient(win->hwnd, &sx, &sy)) {
+                event.type = UI_MOUSE_MOVE;
+                event.x = sx - win->chrome.findbar.rect.x;
+                event.y = sy - win->chrome.findbar.rect.y;
+            } else {
+                event.type = UI_MOUSE_LEAVE;
+                event.x = 0;
+                event.y = 0;
+            }
         } else {
             event.type = UI_MOUSE_DOWN;
             SetCapture(hwnd);
