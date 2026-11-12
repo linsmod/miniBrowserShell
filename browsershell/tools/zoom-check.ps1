@@ -1,11 +1,12 @@
-# tools/zoom-check.ps1 - page zoom and the display scale stay independent.
+# tools/zoom-check.ps1 - devicePixelRatio is page zoom x display scale.
 #
-# The shell's chrome scales with the Windows DPI (uiThemeScale), the page does
-# not: page zoom is the only thing that changes window.devicePixelRatio, so
-# 100% means 100% whatever the display is set to. This pins that policy down:
+# The shell's chrome scales with the Windows DPI (uiThemeScale); the page scales
+# with page zoom * the same DPI, like a browser:
 #
-#   zoom 100, display 100/125  ->  dpr 1.0,  innerWidth 1100
-#   zoom 125, display 100/125  ->  dpr 1.25, innerWidth 880
+#
+#   zoom 100, display 100 -> dpr 1.0    innerWidth 1100
+#   zoom 100, display 125 -> dpr 1.25   innerWidth 880
+#   zoom 125, display 125 -> dpr 1.5625 innerWidth 704
 #
 #   pwsh -File tools\zoom-check.ps1
 #   pwsh -File tools\zoom-check.ps1 -Exe build-check\Release\minishell.exe
@@ -32,8 +33,8 @@ $url = 'file:///' + ($page -replace '\\', '/')
 
 $cases = @(
     @{ name = 'zoom 100, display 100'; zoom = 100; dpi = 100; iw = 1100; dpr = '1' },
-    @{ name = 'zoom 100, display 125'; zoom = 100; dpi = 125; iw = 1100; dpr = '1' },
-    @{ name = 'zoom 125, display 125'; zoom = 125; dpi = 125; iw = 880; dpr = '1.25' }
+    @{ name = 'zoom 100, display 125'; zoom = 100; dpi = 125; iw = 880; dpr = '1.25' },
+    @{ name = 'zoom 125, display 125'; zoom = 125; dpi = 125; iw = 704; dpr = '1.5625' }
 )
 
 $failed = 0
@@ -74,5 +75,5 @@ if ($failed -gt 0) {
     exit 1
 }
 
-"PASS: page zoom is the only thing that changes devicePixelRatio"
+"PASS: devicePixelRatio = page zoom x display scale"
 exit 0

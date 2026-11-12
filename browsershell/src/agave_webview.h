@@ -245,10 +245,11 @@ AGW_API void agave_webview_set_zoom(AgaveWebView* view, int percent);
 AGW_API int  agave_webview_zoom(AgaveWebView* view);
 
 /* Display device scale: device pixels per CSS pixel in percent of 96 DPI (125 on
- * a 125% Windows display = GetDpiForWindow() * 100 / 96). The shell scales its
- * own chrome with it and reports it to pages/panels; it does NOT change the page
- * zoom in this backend - the engine's zoom knob sets devicePixelRatio directly,
- * and page zoom stays a page property independent of the display. Default 100. */
+ * a 125% Windows display = GetDpiForWindow() * 100 / 96). It is half of the
+ * page's scale: window.devicePixelRatio is zoom * device_scale / 100 and
+ * innerWidth is the view width divided by that, exactly like a browser. Keeping
+ * the user's zoom apart from the DPI is what makes Ctrl+= zoom the page while
+ * the display keeps its own factor. Default 100. */
 AGW_API void agave_webview_set_device_scale(AgaveWebView* view, int percent);
 AGW_API int  agave_webview_device_scale(AgaveWebView* view);
 

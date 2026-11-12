@@ -6408,16 +6408,15 @@ static int probeWriteBmp(const char* path, const unsigned char* bits,
     return ok;
 }
 
-/* CSS px -> device px at the probe's page zoom, rounding half away from zero.
- * getBoundingClientRect() is CSS px, a --shot-rect value comes from it, and the
- * mirror buffer is device px: at --zoom 125 a 100px box covers 125 buffer pixels.
- * --device-scale describes the display; it does not enter this conversion (the
- * page's devicePixelRatio is the page zoom). */
-static int probeRectCssToClient(int value, int zoomPercent)
+/* CSS px -> device px at the probe's page zoom and display scale, rounding half
+ * away from zero. getBoundingClientRect() is CSS px, a --shot-rect value comes
+ * from it, and the mirror buffer is device px: at --zoom 125 on a 125% display a
+ * 100px box covers 156 buffer pixels (1.25 * 1.25). */
+static int probeRectCssToClient(int value, int zoomPercent, int deviceScalePercent)
 {
-    long v = (long)value * zoomPercent;
+    long v = (long)value * zoomPercent * deviceScalePercent;
 
-    return (int)((v >= 0 ? v + 50 : v - 50) / 100);
+    return (int)((v >= 0 ? v + 5000 : v - 5000) / 10000);
 }
 
 static int probeCapture(const char* path)
@@ -6456,10 +6455,10 @@ static int probeCapture(const char* path)
     if (g_probeShotRectSet) {
         int zoom = g_probeZoom > 0 ? g_probeZoom : 100;
         int deviceScale = g_probeDeviceScale > 0 ? g_probeDeviceScale : 100;
-        int x0 = probeRectCssToClient(g_probeShotRect[0], zoom);
-        int y0 = probeRectCssToClient(g_probeShotRect[1], zoom);
-        int x1 = probeRectCssToClient(g_probeShotRect[0] + g_probeShotRect[2], zoom);
-        int y1 = probeRectCssToClient(g_probeShotRect[1] + g_probeShotRect[3], zoom);
+        int x0 = probeRectCssToClient(g_probeShotRect[0], zoom, deviceScale);
+        int y0 = probeRectCssToClient(g_probeShotRect[1], zoom, deviceScale);
+        int x1 = probeRectCssToClient(g_probeShotRect[0] + g_probeShotRect[2], zoom, deviceScale);
+        int y1 = probeRectCssToClient(g_probeShotRect[1] + g_probeShotRect[3], zoom, deviceScale);
 
         rx = x0;
         ry = y0;
@@ -6470,7 +6469,7 @@ static int probeCapture(const char* path)
         if (ry < 0) { rh += ry; ry = 0; }
 
         if (rx >= w || ry >= h || rw <= 0 || rh <= 0) {
-            int total = zoom;
+            int total = zoom * deviceScale / 100;
 
             if (total < 1)
                 total = 1;
@@ -7923,10 +7922,9 @@ static void probeUsage(void)
             "            after the page settled, then wait 400ms so the engine can\n"
             "            relayout before --eval reads the new viewport\n"
             "  --zoom <percent>  page zoom before --eval (10..500, default 100)\n"
-            "  --device-scale <percent>  the display scale the shell reports (settings\n"
-            "            page, inspect log), as percent of 96 DPI. It does NOT feed\n"
-            "            window.devicePixelRatio: page zoom and the display are\n"
-            "            separate, and --zoom alone changes the page\n"
+            "  --device-scale <percent>  display DPI for the page, as device pixels\n"
+            "            per CSS px in percent of 96 DPI (100..500, default 100).\n"
+            "            It multiplies with --zoom (both feed window.devicePixelRatio)\n"
             "  --reload <n>  reload the page n times and run the eval after\n"
             "                every round (page lifecycle comparison)\n"
             "  --offline module fetches are served from the cache only\n"
