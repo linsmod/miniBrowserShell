@@ -4210,9 +4210,9 @@ static int dirtyHits(UiRect dirty, UiRect area)
 static void syncFieldBackgrounds(void)
 {
     if (g_address)
-        InvalidateRect(g_address, NULL, TRUE);
+        InvalidateRect(g_address, NULL, FALSE);
     if (g_findEdit && IsWindowVisible(g_findEdit))
-        InvalidateRect(g_findEdit, NULL, TRUE);
+        InvalidateRect(g_findEdit, NULL, FALSE);
 }
 
 static void invalidateChromeDirty(HWND hwnd)
@@ -4352,7 +4352,7 @@ static LRESULT CALLBACK pillEditProc(HWND hwnd, UINT message, WPARAM wParam, LPA
             rect.bottom = dirty.y + dirty.h;
 
             InvalidateRect(win->hwnd, &rect, FALSE);
-            InvalidateRect(hwnd, NULL, TRUE);
+            InvalidateRect(hwnd, NULL, FALSE);
         }
 
         if (message == WM_MOUSEMOVE) {
@@ -9431,8 +9431,82 @@ static int g_shellHidden;
 /* Chrome's find bar floats over the page and the page does not reflow. In Win32
  * the page *is* a child window, so the only way to be seen above it is another
  * child on top: this window holds the card, while the native EDIT stays a child
- * of the shell (so WM_CTLCOLOREDIT keeps working) and is raised above it. The
- * card is a pill, so the window is clipped to a round region. */
+ * of the shell (so WM_CTLCOLOREDIT keeps working) and is raised above it.
+ *
+ * Every hover step, keystroke and button press repaints this window, so the card
+ * is composed into a cached back buffer and blitted in one go: painting the
+ * GDI+ shapes straight to the window DC flashed on every interaction. */
+
+static HDC     g_findPaintDc;
+static HBITMAP g_findPaintBitmap;
+static HGDIOBJ g_findPaintOld;
+static HWND    g_findPaintHwnd;
+static int     g_findPaintW, g_findPaintH;
+
+static void findPaintFree(void)
+{
+    if (g_findPaintDc) {
+        if (g_findPaintOld)
+            SelectObject(g_findPaintDc, g_findPaintOld);
+        DeleteDC(g_findPaintDc);
+    }
+    if (g_findPaintBitmap)
+        DeleteObject(g_findPaintBitmap);
+
+    g_findPaintDc = NULL;
+    g_findPaintBitmap = NULL;
+    g_findPaintOld = NULL;
+    g_findPaintHwnd = NULL;
+    g_findPaintW = 0;
+    g_findPaintH = 0;
+}
+
+static void findPaintDoubleBuffered(HWND hwnd, ShellWindow* win, HDC target, int width, int height)
+{
+    unsigned surface;
+    HBRUSH background;
+    RECT box;
+
+    if (g_findPaintHwnd != hwnd || g_findPaintW != width || g_findPaintH != height) {
+        findPaintFree();
+        g_findPaintDc = CreateCompatibleDC(target);
+        g_findPaintBitmap = CreateCompatibleBitmap(target, width, height);
+
+        if (g_findPaintDc && g_findPaintBitmap) {
+            g_findPaintOld = SelectObject(g_findPaintDc, g_findPaintBitmap);
+            g_findPaintHwnd = hwnd;
+            g_findPaintW = width;
+            g_findPaintH = height;
+        } else {
+            findPaintFree();
+        }
+    }
+
+    if (!g_findPaintDc) {
+        uiChromePaintFindOverlay(&win->chrome, target, width, height);
+        return;
+    }
+
+    /* The card's rounded edge is antialiased against whatever sits under it. In
+     * the back buffer that is nothing, so prefill with the card colour: the
+     * corners then blend into themselves instead of into black. */
+    surface = win->chrome.theme.surface;
+    background = CreateSolidBrush(RGB((surface >> 16) & 0xFF, (surface >> 8) & 0xFF,
+                                      surface & 0xFF));
+
+    box.left = 0;
+    box.top = 0;
+    box.right = width;
+    box.bottom = height;
+
+    if (background) {
+        FillRect(g_findPaintDc, &box, background);
+        DeleteObject(background);
+    }
+
+    uiChromePaintFindOverlay(&win->chrome, g_findPaintDc, width, height);
+    BitBlt(target, 0, 0, width, height, g_findPaintDc, 0, 0, SRCCOPY);
+}
 
 static void findBarUpdateRegion(HWND bar)
 {
@@ -9500,12 +9574,17 @@ static LRESULT CALLBACK findBarProc(HWND hwnd, UINT message, WPARAM wParam, LPAR
         RECT client;
         HDC hdc = BeginPaint(hwnd, &ps);
 
-        if (win && GetClientRect(hwnd, &client))
-            uiChromePaintFindOverlay(&win->chrome, hdc, client.right, client.bottom);
+        if (win && GetClientRect(hwnd, &client) &&
+            client.right > 0 && client.bottom > 0)
+            findPaintDoubleBuffered(hwnd, win, hdc, client.right, client.bottom);
 
         EndPaint(hwnd, &ps);
         return 0;
     }
+
+    case WM_DESTROY:
+        findPaintFree();
+        return 0;
 
     case WM_ERASEBKGND:
         return 1;
