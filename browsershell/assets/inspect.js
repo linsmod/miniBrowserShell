@@ -3,8 +3,14 @@
  *
  * It never inserts a node: an injected highlight can stretch the document,
  * create scrollbars, or be captured by an ancestor's transform. The shell owns
- * the overlay window; this script only reports the target's viewport rect and a
- * label over agavePostMessage('__agb_inspect__x,y,w,h|label').
+ * the overlay window; this script only reports the target's rect and a label
+ * over agavePostMessage('__agb_inspect__<device rect>|<css rect>|<label>|<sel>').
+ *
+ * The device rect is scaled here, with this window's own devicePixelRatio, not
+ * with the shell's 125%/etc. guess: on the very first frames the engine still
+ * reports a 1.0 ratio (it re-lays out on the first resize), so a host-side
+ * multiplication lands the mark at 0.8x of the right place until the window is
+ * resized. The page ratio is the only authority for both directions.
  */
 (function () {
     if (window.__mbInspect) {
@@ -13,6 +19,22 @@
 
     var last = "";
     var target = null;
+
+    function dpr() {
+        return window.devicePixelRatio || 1;
+    }
+
+    function deviceRect(r) {
+        var d = dpr();
+
+        return Math.round(r.left * d) + "," + Math.round(r.top * d) + "," +
+               Math.round(r.width * d) + "," + Math.round(r.height * d);
+    }
+
+    function cssRect(r) {
+        return Math.round(r.left) + "," + Math.round(r.top) + "," +
+               Math.round(r.width) + "," + Math.round(r.height);
+    }
 
     function selectorOf(el) {
         if (!el || !el.tagName) {
@@ -71,8 +93,7 @@
         }
 
         r = el.getBoundingClientRect();
-        payload = Math.round(r.left) + "," + Math.round(r.top) + "," +
-                  Math.round(r.width) + "," + Math.round(r.height) + "|" +
+        payload = deviceRect(r) + "|" + cssRect(r) + "|" + dpr() + "|" +
                   labelOf(el) + "|" + selectorOf(el);
 
         if (payload === last) {
@@ -93,13 +114,15 @@
         report(target);
     }
 
-    /* Host-driven hover: with the inspect shield on, the page never sees a
-     * mousemove, so the host asks for the element under a point instead. */
+    /* Host-driven hover: while inspecting the page never sees a mousemove, so the
+     * host asks for the element under a point instead. The point arrives in
+     * device pixels; elementFromPoint wants CSS pixels. */
     function probeAt(x, y) {
         var el;
+        var d = dpr();
 
         try {
-            el = document.elementFromPoint(x, y);
+            el = document.elementFromPoint(x / d, y / d);
         } catch (e) {
             return;
         }

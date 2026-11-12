@@ -76,11 +76,6 @@
  * onCommandDropped). */
 #define AGW_SHELL_STATUS (WM_APP + 24)
 
-/* Inspect mouse hook -> shell (see inspectMouseHook): coordinates are view
- * client pixels, the click message carries the button in lParam. */
-#define AGW_INSPECT_MOVE  (WM_APP + 31)
-#define AGW_INSPECT_CLICK (WM_APP + 32)
-
 /* Chrome metrics come from the active window's theme (DPI-scaled). */
 #define CHROME        (&g_cur->chrome)
 #define TAB_HEIGHT    (CHROME->theme.tabstrip_h)
@@ -1010,19 +1005,25 @@ static void layoutAll(void)
         layoutTab(i);
 }
 
+/* The "Loading <url>... 42%" bubble was kept but is no longer shown: the URL just
+ * echoed the address bar and the percent comes from the engine's coarse progress
+ * callback, so it read as a fake progress display. The code stays behind this
+ * flag instead of being deleted - a real loading state may come back. */
+#define STATUS_SHOW_LOADING 0
+
 static void updateStatus(void)
 {
     Tab* tab = &g_tabs[g_activeTab];
     char text[1024];
 
-    /* The bubble only exists while it has something to say: a load in progress,
-     * a message (hover link / download / error / bookmark), or a zoom level. The
+    /* The bubble only exists while it has something to say, a message (hover
+     * link / download / error / bookmark / inspect target), or a zoom level. The
      * plain URL is not a message - a bubble that never hides is just the old
      * status bar wearing a costume. */
     text[0] = 0;
 
     if (tab->used) {
-        if (tab->loading)
+        if (STATUS_SHOW_LOADING && tab->loading)
             _snprintf(text, sizeof(text), "Loading %s... %d%%", tab->url, tab->progress);
         else if (tab->status[0])
             _snprintf(text, sizeof(text), "%s", tab->status);
@@ -1041,9 +1042,18 @@ static void updateStatus(void)
      * message and the pill are separate), so it is not glued into the text. */
     strncpy(g_status, text, sizeof(g_status) - 1);
     g_status[sizeof(g_status) - 1] = 0;
-    syncChrome();
+
+    if (!g_hwnd) {
+        syncChrome();
+        return;
+    }
+
+    /* The bubble's rect comes from the chrome layout, and layoutAll() is the only
+     * place that recomputes it. Skipping it here left the previous message's box
+     * in place: an emptied status kept an empty pill on screen, and a longer
+     * message stayed clipped to the old width until the window was resized. */
+    layoutAll();
     InvalidateRect(g_hwnd, NULL, FALSE);
-    syncStatusOverlay();
 }
 
 static void applyZoomToActive(void)
@@ -1069,8 +1079,6 @@ static void toggleInspect(void);
 static void inspectStop(const char* source);
 static void inspectOnMove(void* user, int x, int y);
 static void inspectOnClick(void* user, int x, int y, int button);
-static void inspectHookInstall(void);
-static void inspectHookRemove(void);
 static void updateWindowTitle(void);
 static void onCloseWindow(AgaveWebView* view, void* user);
 static void onActivateView(AgaveWebView* view, void* user);
@@ -1459,40 +1467,71 @@ static void onPageMessage(AgaveWebView* view, const char* message, void* user)
 
     enterTabWindow(tab);
 
-    /* Inspect probe: "x,y,w,h|label" in page (CSS) pixels. The overlay draws in
-     * window pixels, so the device scale applies. */
+    /* Inspect probe: "<device x,y,w,h>|<css x,y,w,h>|<dpr>|<label>|<selector>".
+     * The mark is placed in device pixels and the page already did that scaling
+     * with its own devicePixelRatio: the shell's 125% guess is wrong on the first
+     * frames (the engine reports a 1.0 ratio until the first resize), which put
+     * the frame at 0.8x of the right place until the window was resized. */
     if (!strncmp(message, "__agb_inspect__", 15) && g_inspectOn) {
-        int x = 0, y = 0, w = 0, h = 0;
         const char* payload = message + 15;
-        const char* bar = strchr(payload, '|');
-        const char* label = bar ? bar + 1 : "";
-        const char* selBar = label ? strchr(label, '|') : NULL;
-        int scale = agave_webview_device_scale(tab->view);
+        const char* p1 = strchr(payload, '|');
+        const char* p2 = p1 ? strchr(p1 + 1, '|') : NULL;
+        const char* p3 = p2 ? strchr(p2 + 1, '|') : NULL;
+        const char* p4 = p3 ? strchr(p3 + 1, '|') : NULL;
+        int dx = 0, dy = 0, dw = 0, dh = 0;
+        int cx = 0, cy = 0, cw = 0, ch = 0;
+        double dpr = 0.0;
 
-        if (scale <= 0)
-            scale = 100;
+        if (p1 && p2 && p3 && p4 &&
+            sscanf(payload, "%d,%d,%d,%d", &dx, &dy, &dw, &dh) == 4 &&
+            sscanf(p1 + 1, "%d,%d,%d,%d", &cx, &cy, &cw, &ch) == 4) {
+            size_t labelLen = (size_t)(p4 - (p3 + 1));
 
-        if (bar && sscanf(payload, "%d,%d,%d,%d", &x, &y, &w, &h) == 4) {
-            size_t labelLen = selBar ? (size_t)(selBar - label) : strlen(label);
+            sscanf(p2 + 1, "%lf", &dpr);
 
             if (labelLen >= sizeof(g_inspectLabel))
                 labelLen = sizeof(g_inspectLabel) - 1;
-            memcpy(g_inspectLabel, label, labelLen);
+            memcpy(g_inspectLabel, p3 + 1, labelLen);
             g_inspectLabel[labelLen] = 0;
 
-            if (selBar)
-                _snprintf(g_inspectSelector, sizeof(g_inspectSelector) - 1, "%s", selBar + 1);
-            else
-                g_inspectSelector[0] = 0;
+            _snprintf(g_inspectSelector, sizeof(g_inspectSelector) - 1, "%s", p4 + 1);
             g_inspectSelector[sizeof(g_inspectSelector) - 1] = 0;
 
-            g_inspectCss[0] = x;
-            g_inspectCss[1] = y;
-            g_inspectCss[2] = w;
-            g_inspectCss[3] = h;
+            /* The menu copies CSS pixels: that is what a page stylesheet and the
+             * devtools element panel speak. */
+            g_inspectCss[0] = cx;
+            g_inspectCss[1] = cy;
+            g_inspectCss[2] = cw;
+            g_inspectCss[3] = ch;
 
-            uiInspectSetMark(&g_inspect, x * scale / 100, y * scale / 100,
-                             w * scale / 100, h * scale / 100, g_inspectLabel);
+            agbLog(AGB_LOG_NAV, "inspect mark dev=%d,%d %dx%d css=%d,%d %dx%d dpr=%.2f",
+                   dx, dy, dw, dh, cx, cy, cw, ch, dpr);
+
+            uiInspectSetMark(&g_inspect, dx, dy, dw, dh, g_inspectLabel);
+
+            /* The info goes to the bottom-left status bubble instead of a chip
+             * glued to the mark: next to the element, the label had to fight the
+             * element's own size and a 2x2 target clipped it to nothing. The
+             * bubble is sized for text and never clips a tiny target, and it can
+             * be long - so the rect and the selector tail ride along. */
+            if (g_inspectLabel[0]) {
+                char info[320];
+                const char* sel = g_inspectSelector;
+                size_t selLen = strlen(sel);
+
+                if (selLen > 96)
+                    selLen = 96;
+
+                _snprintf(info, sizeof(info) - 1, "%s   [%d,%d %dx%d]   %.*s%s",
+                          g_inspectLabel, cx, cy, cw, ch,
+                          (int)selLen, sel,
+                          (strlen(g_inspectSelector) > selLen) ? " ..." : "");
+                info[sizeof(info) - 1] = 0;
+
+                _snprintf(tab->status, sizeof(tab->status) - 1, "%s", info);
+                tab->status[sizeof(tab->status) - 1] = 0;
+                updateStatus();
+            }
         }
         return;
     }
@@ -2300,19 +2339,29 @@ static void inspectStop(const char* source)
     g_inspectOn = 0;
     agbLog(AGB_LOG_SHELL, "inspect off (%s)", source ? source : "?");
 
+    /* Release the page's mouse capture before anything else: a stale capture
+     * would keep the control swallowing input after inspect mode is gone. */
+    if (tab->used && tab->view)
+        agave_webview_set_input_capture(tab->view, 0, NULL, NULL);
+
     if (g_inspectReady) {
+        uiInspectSetTarget(&g_inspect, NULL);
         uiInspectClear(&g_inspect);
         uiInspectShow(&g_inspect, 0);
     }
 
-    inspectHookRemove();
-
     if (tab->used && tab->view)
         agave_webview_eval(tab->view, "if(window.__mbInspect)window.__mbInspect.stop();");
+
+    /* Drop the element info from the bubble: it described a mark that is gone. */
+    if (tab->used) {
+        tab->status[0] = 0;
+        updateStatus();
+    }
 }
 
 /* ------------------------------------------------------------------------- */
-/* inspect input (mouse hook) and its own context menu                        */
+/* inspect input (control message path) and its own context menu             */
 /* ------------------------------------------------------------------------- */
 
 static void copyUtf8ToClipboard(const char* text)
@@ -2352,13 +2401,14 @@ static void copyUtf8ToClipboard(const char* text)
     agbLog(AGB_LOG_SHELL, "clipboard copy ok=%d chars=%d", copied, wideChars);
 }
 
-/* The hook swallows hover, so the page is asked for the element under a point
- * (it can still hit-test: elementFromPoint works without a real mouse event). */
+/* The control swallows hover, so the page is asked for the element under a point
+ * (it can still hit-test: elementFromPoint works without a real mouse event).
+ * Coordinates go as device pixels; the page divides by its own
+ * devicePixelRatio, which is the only reliable ratio (see inspect.js). */
 static void inspectOnMove(void* user, int x, int y)
 {
     Tab* tab = &g_tabs[g_activeTab];
     char script[160];
-    int scale;
 
     (void)user;
 
@@ -2369,13 +2419,8 @@ static void inspectOnMove(void* user, int x, int y)
 
     g_inspectProbeTick = GetTickCount();
 
-    scale = agave_webview_device_scale(tab->view);
-    if (scale <= 0)
-        scale = 100;
-
     _snprintf(script, sizeof(script) - 1,
-              "if(window.__mbInspect)window.__mbInspect.probe(%d,%d);",
-              x * 100 / scale, y * 100 / scale);
+              "if(window.__mbInspect)window.__mbInspect.probe(%d,%d);", x, y);
     script[sizeof(script) - 1] = 0;
     agave_webview_eval(tab->view, script);
 }
@@ -2467,96 +2512,31 @@ static void inspectOnClick(void* user, int x, int y, int button)
 /* inspect input: low-level mouse hook                                       */
 /* ------------------------------------------------------------------------- */
 
-/* While inspecting, the page must not receive hover/clicks. A window over the
- * webview would do that, but any such window (layered or not) stops the page
- * from repainting on resize - the webview ends up showing a stale frame. A
- * WH_MOUSE_LL hook swallows the events without drawing anything, so the page
- * keeps painting normally.
- *
- * The hook runs on this (UI) thread. It must stay trivial: it only decides
- * whether the event belongs to the content area and posts it to the shell. */
+/* While inspecting, the page must not receive hover/clicks. Neither of the two
+ * obvious mechanisms works here:
+ *   - an overlay window above the webview (even an invisible layered child)
+ *     makes the page stop repainting on resize;
+ *   - a WH_MOUSE_LL hook that returns 1 for WM_MOUSEMOVE freezes the pointer
+ *     itself (returning non-zero discards the event, movement included), which
+ *     locks the user's mouse.
+ * So the control swallows the input in its own window proc instead
+ * (agave_webview_set_input_capture): the cursor moves normally, the page simply
+ * never sees the message. kind: 0 = move, 1 = left, 2 = right. */
 
-static HHOOK g_inspectHook;
-
-static LRESULT CALLBACK inspectMouseHook(int code, WPARAM wp, LPARAM lp)
+static void inspectInput(AgaveWebView* view, int kind, int x, int y, void* user)
 {
-    MSLLHOOKSTRUCT* ms = (MSLLHOOKSTRUCT*)lp;
-    Tab* tab = &g_tabs[g_activeTab];
-    POINT client;
-    UiRect content;
+    (void)view;
+    (void)user;
 
-    if (code < 0 || !g_inspectOn || !tab->used || !tab->hwnd || !g_cur)
-        return CallNextHookEx(g_inspectHook, code, wp, lp);
+    if (!g_inspectOn)
+        return;
 
-    /* Only while our window is in front: a global hook must not eat the user's
-     * clicks in other applications. */
-    if (GetForegroundWindow() != g_hwnd)
-        return CallNextHookEx(g_inspectHook, code, wp, lp);
-
-    client = ms->pt;
-    if (!ScreenToClient(g_hwnd, &client))
-        return CallNextHookEx(g_inspectHook, code, wp, lp);
-
-    content = CHROME->content;
-    if (client.x < content.x || client.y < content.y ||
-        client.x >= content.x + content.w || client.y >= content.y + content.h)
-        return CallNextHookEx(g_inspectHook, code, wp, lp);
-
-    /* View client coordinates for the probe (CSS conversion is the caller's). */
-    ScreenToClient(tab->hwnd, &client);
-
-    switch (wp) {
-    case WM_MOUSEMOVE:
-        PostMessageW(g_hwnd, AGW_INSPECT_MOVE,
-                     MAKELONG((short)client.x, (short)client.y), 0);
-        return 1;
-
-    case WM_LBUTTONUP:
-        PostMessageW(g_hwnd, AGW_INSPECT_CLICK,
-                     MAKELONG((short)client.x, (short)client.y), 1);
-        return 1;
-
-    case WM_RBUTTONUP:
-        PostMessageW(g_hwnd, AGW_INSPECT_CLICK,
-                     MAKELONG((short)client.x, (short)client.y), 2);
-        return 1;
-
-    case WM_MOUSEWHEEL:
-        /* Scrolling still belongs to the page. */
-        PostMessageW(tab->hwnd, WM_MOUSEWHEEL, (WPARAM)HIWORD(ms->mouseData) << 16,
-                     MAKELPARAM((short)client.x, (short)client.y));
-        return 1;
-
-    case WM_LBUTTONDOWN:
-    case WM_RBUTTONDOWN:
-    case WM_MBUTTONDOWN:
-    case WM_MBUTTONUP:
-        /* Swallow the press too, otherwise the page gets a click pair. */
-        return 1;
+    if (kind == 0) {
+        inspectOnMove(NULL, x, y);
+        return;
     }
 
-    return CallNextHookEx(g_inspectHook, code, wp, lp);
-}
-
-static void inspectHookInstall(void)
-{
-    if (g_inspectHook)
-        return;
-
-    g_inspectHook = SetWindowsHookExW(WH_MOUSE_LL, inspectMouseHook,
-                                      GetModuleHandleW(NULL), 0);
-    if (!g_inspectHook)
-        agbLog(AGB_LOG_SHELL, "inspect hook: SetWindowsHookEx failed: %lu",
-               (unsigned long)GetLastError());
-}
-
-static void inspectHookRemove(void)
-{
-    if (!g_inspectHook)
-        return;
-
-    UnhookWindowsHookEx(g_inspectHook);
-    g_inspectHook = NULL;
+    inspectOnClick(NULL, x, y, kind);
 }
 
 static void inspectStart(void)
@@ -2576,13 +2556,18 @@ static void inspectStart(void)
     uiInspectShow(&g_inspect, 1);
     injectScriptFile(tab->view, "inspect.js", NULL);
 
-    /* The page must not see the mouse any more, and no extra window may sit
-     * over the webview: a child overlay stopped the page from repainting on
-     * resize. A low-level mouse hook swallows the events instead - nothing is
-     * drawn over the page, so resizing/painting is untouched. */
-    inspectHookInstall();
+    /* The page must not see the mouse any more. The control swallows it in its
+     * own window proc - no window above the page (that stops repainting on
+     * resize) and no low-level hook (that freezes the cursor). */
+    agave_webview_set_input_capture(tab->view, 1, inspectInput, NULL);
 
-    agbLog(AGB_LOG_SHELL, "inspect on (host marker + mouse hook)");
+    agbLog(AGB_LOG_SHELL, "inspect on (host marker + control input capture)");
+
+    /* Geometry snapshot: an offset that appears only before the first resize was
+     * once a device-scale mismatch, so both sides are logged here. */
+    agbLog(AGB_LOG_SHELL, "inspect geometry: content=%d,%d %dx%d scale=%d dpi=%u",
+           CHROME->content.x, CHROME->content.y, CHROME->content.w, CHROME->content.h,
+           agave_webview_device_scale(tab->view), (unsigned)CHROME->theme.dpi);
 
     /* Debug aid: a fixed mark proves the overlay's paint path without needing a
      * page report (probe runs have no pointer). */
@@ -2594,6 +2579,24 @@ static void inspectStart(void)
     strncpy(tab->status, "Inspect: hover an element, right click for the menu, Esc/F12 to exit",
             sizeof(tab->status) - 1);
     updateStatus();
+
+    /* Pick up whatever is under the pointer right now. With the mouse still, the
+     * capture swallows every WM_MOUSEMOVE, so no probe was ever issued and F12
+     * looked like it had done nothing. Reading the cursor position is passive:
+     * nothing is moved, clicked or foregrounded. */
+    {
+        POINT point;
+        RECT client;
+
+        if (GetCursorPos(&point) && ScreenToClient(tab->hwnd, &point) &&
+            GetClientRect(tab->hwnd, &client) &&
+            point.x >= 0 && point.y >= 0 &&
+            point.x < client.right && point.y < client.bottom) {
+            SetCursor(LoadCursorW(NULL, IDC_CROSS));
+            g_inspectProbeTick = 0;
+            inspectOnMove(NULL, point.x, point.y);
+        }
+    }
 }
 
 static void toggleInspect(void)
@@ -3566,6 +3569,177 @@ static void backActive(const char* source)
     agbLog(AGB_LOG_SHELL, "back (%s) can=%d url=%s", source,
            agave_webview_can_back(tab->view) ? 1 : 0, tab->url);
     agave_webview_back(tab->view);
+}
+
+/* ------------------------------------------------------------------------- */
+/* tab strip context menu                                                    */
+/* ------------------------------------------------------------------------- */
+
+/* Tabs live in fixed slots: a view keeps the Tab* it was created with, so the
+ * array can never be shifted. "To the right" therefore means "the first free
+ * slot after this one" - adjacent whenever the neighbour slot is free. */
+static int freeSlotAfter(int index)
+{
+    int i;
+
+    for (i = index + 1; i < MAX_TABS; ++i) {
+        if (!g_tabs[i].used)
+            return i;
+    }
+
+    return -1;
+}
+
+static void duplicateTab(int index)
+{
+    int slot;
+
+    if (index < 0 || index >= MAX_TABS || !g_tabs[index].used)
+        return;
+
+    slot = freeSlotAfter(index);
+    if (slot < 0)
+        slot = nextFreeTab();
+    if (slot < 0)
+        return;
+
+    agbLog(AGB_LOG_SHELL, "tab duplicate index=%d slot=%d url=%s", index, slot,
+           g_tabs[index].url);
+    createTabIn(slot, g_tabs[index].url);
+}
+
+static void reloadTab(int index)
+{
+    Tab* tab;
+
+    if (index < 0 || index >= MAX_TABS || !g_tabs[index].used)
+        return;
+
+    tab = &g_tabs[index];
+    if (!tab->view)
+        return;
+
+    agbLog(AGB_LOG_SHELL, "reload (tab menu) index=%d url=%s", index, tab->url);
+    agave_webview_reload(tab->view);
+}
+
+/* Closing walks downwards so the indices of the tabs still to close stay valid
+ * (slots are sparse; closeTab only clears the one slot). */
+static void closeOtherTabs(int keep)
+{
+    int i;
+
+    if (keep < 0 || keep >= MAX_TABS || !g_tabs[keep].used)
+        return;
+
+    agbLog(AGB_LOG_SHELL, "tab close others keep=%d", keep);
+
+    for (i = MAX_TABS - 1; i >= 0; --i) {
+        if (i != keep && g_tabs[i].used)
+            closeTab(i);
+    }
+
+    if (g_activeTab != keep)
+        setActiveTab(keep);
+}
+
+static void closeTabsToRight(int from)
+{
+    int i;
+
+    if (from < 0 || from >= MAX_TABS || !g_tabs[from].used)
+        return;
+
+    agbLog(AGB_LOG_SHELL, "tab close right of=%d", from);
+
+    for (i = MAX_TABS - 1; i > from; --i) {
+        if (g_tabs[i].used)
+            closeTab(i);
+    }
+
+    if (!g_tabs[g_activeTab].used)
+        setActiveTab(from);
+}
+
+static void showTabMenu(int index, int screenX, int screenY)
+{
+    UiMenu menu;
+    ShellWindow* previous;
+    int others = 0;
+    int right = 0;
+    int i;
+    int choice;
+
+    if (index < 0 || index >= MAX_TABS || !g_tabs[index].used)
+        return;
+
+    for (i = 0; i < MAX_TABS; ++i) {
+        if (!g_tabs[i].used)
+            continue;
+
+        if (i != index)
+            ++others;
+        if (i > index)
+            ++right;
+    }
+
+    uiMenuInit(&menu);
+    uiMenuAdd(&menu, "New tab to the right", NULL, 50, 0, UI_MENU_ICON_NONE, NULL);
+    uiMenuAdd(&menu, "Reload", "Ctrl+R", 51, 0, UI_MENU_ICON_NONE, NULL);
+    uiMenuAddSeparator(&menu);
+    uiMenuAdd(&menu, "Duplicate", NULL, 52, 0, UI_MENU_ICON_NONE, NULL);
+    uiMenuAdd(&menu, "Close", "Ctrl+W", 53, 0, UI_MENU_ICON_NONE, NULL);
+    uiMenuAdd(&menu, "Close other tabs", NULL,
+              54, others ? 0 : UI_MENU_ITEM_DISABLED, UI_MENU_ICON_NONE, NULL);
+    uiMenuAdd(&menu, "Close tabs to the right", NULL,
+              55, right ? 0 : UI_MENU_ITEM_DISABLED, UI_MENU_ICON_NONE, NULL);
+    uiMenuTrim(&menu);
+
+    agbLog(AGB_LOG_SHELL, "tab menu open index=%d others=%d right=%d", index, others, right);
+
+    /* uiMenuHostRun runs a modal loop; the dispatch below must act on this
+     * window even if the loop moved the focus. */
+    previous = g_cur;
+
+    {
+        POINT anchor;
+
+        anchor.x = screenX;
+        anchor.y = screenY;
+        choice = uiMenuHostRun(&CHROME->theme, &menu, anchor.x, anchor.y,
+                               UI_MENU_ALIGN_LEFT, g_hwnd, NULL);
+    }
+
+    g_cur = previous;
+
+    agbLog(AGB_LOG_SHELL, "tab menu choice=%d", choice);
+
+    switch (choice) {
+    case 50: {
+        int slot = freeSlotAfter(index);
+
+        if (slot >= 0)
+            createTabIn(slot, "about:blank");
+        break;
+    }
+    case 51:
+        reloadTab(index);
+        break;
+    case 52:
+        duplicateTab(index);
+        break;
+    case 53:
+        closeTab(index);
+        break;
+    case 54:
+        closeOtherTabs(index);
+        break;
+    case 55:
+        closeTabsToRight(index);
+        break;
+    default:
+        break;
+    }
 }
 
 static void forwardActive(const char* source)
@@ -4603,10 +4777,12 @@ static LRESULT CALLBACK shellProcInner(HWND hwnd, UINT message, WPARAM wParam, L
         break;
 
     case WM_MOVE:
-        /* An owned popup is positioned in screen coordinates, so moving the
-         * shell has to re-place the inspect mark. */
+        /* Owned popups are positioned in screen coordinates, so moving the
+         * shell has to re-place the inspect mark and the status bubble. */
         if (g_inspectReady && g_inspectOn)
             uiInspectRefresh(&g_inspect);
+        if (g_cur && g_cur->statusBar)
+            syncStatusOverlay();
         break;
 
     case WM_SIZE:
@@ -4629,22 +4805,12 @@ static LRESULT CALLBACK shellProcInner(HWND hwnd, UINT message, WPARAM wParam, L
         InvalidateRect(hwnd, NULL, FALSE);
         return 0;
 
-    /* Inspect mouse hook: the hook itself only swallows the event and posts it
-     * here, so the probe/menu work happens outside the hook's time budget. */
-    case AGW_INSPECT_MOVE:
-        inspectOnMove(NULL, (int)(short)LOWORD(wParam), (int)(short)HIWORD(wParam));
-        return 0;
-
-    case AGW_INSPECT_CLICK:
-        inspectOnClick(NULL, (int)(short)LOWORD(wParam), (int)(short)HIWORD(wParam),
-                       (int)lParam);
-        return 0;
-
     case WM_TIMER:
         /* A cold tab switch is waiting for its warm-up frame (see
          * switchTabWarm): finish as soon as it lands, or give up after the
          * timeout so a hung page cannot swallow the click. */
-        if (wParam == WARM_TAB_TIMER) {            int index = g_warmTab;
+        if (wParam == WARM_TAB_TIMER) {
+            int index = g_warmTab;
 
             if (index < 0 || index >= MAX_TABS || !g_tabs[index].used) {
                 cancelWarmSwitch();
@@ -4884,9 +5050,30 @@ static LRESULT CALLBACK shellProcInner(HWND hwnd, UINT message, WPARAM wParam, L
         break;
     }
 
-    case WM_SETCURSOR:
-        if (LOWORD(lParam) == HTCLIENT && g_cur) {
+    /* Right click on a tab opens the tab strip's own menu. The page's menu never
+     * applies to the chrome, and a right click anywhere else in the chrome keeps
+     * whatever the default handler does. The menu acts on the tab under the
+     * pointer, which is not necessarily the active one (Chrome behaves the same
+     * way: the row you right clicked is the row the commands hit). */
+    case WM_RBUTTONUP: {
+        int index = uiChromeTabAt(CHROME, (short)LOWORD(lParam), (short)HIWORD(lParam));
+
+        if (index >= 0) {
             POINT point;
+
+            point.x = (short)LOWORD(lParam);
+            point.y = (short)HIWORD(lParam);
+            ClientToScreen(hwnd, &point);
+
+            agbLog(AGB_LOG_SHELL, "right click on tab index=%d", index);
+            showTabMenu(index, point.x, point.y);
+            return 0;
+        }
+        break;
+    }
+
+    case WM_SETCURSOR:
+        if (LOWORD(lParam) == HTCLIENT && g_cur) {            POINT point;
             UiPart part;
 
             GetCursorPos(&point);
@@ -5130,6 +5317,47 @@ static void shellPrintFrames(int skip, int depth)
     }
 }
 
+/* Module name for a frame. The old writer only knew the exe and two DLL names by
+ * literal string, so every engine frame printed as "?+0x7fff..." and the report
+ * could not be read at all once the process was gone. */
+static void crashFrameName(unsigned long long address, char* out, size_t cap,
+                           unsigned long long* offset)
+{
+    HMODULE module = NULL;
+    wchar_t path[MAX_PATH];
+    wchar_t* base;
+    int i;
+
+    if (!out || cap == 0)
+        return;
+
+    out[0] = 0;
+    *offset = address;
+
+    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
+                                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                            (LPCWSTR)(uintptr_t)address, &module) || !module)
+        return;
+
+    if (!GetModuleFileNameW(module, path, MAX_PATH))
+        return;
+
+    base = wcsrchr(path, L'\\');
+    base = base ? base + 1 : path;
+
+    for (i = 0; base[i] && i + 1 < (int)cap; ++i) {
+        char c = (char)base[i];
+
+        /* Lowercase: "mb132_x64.dll+0x3fa1" reads better than the raw case. */
+        if (c >= 'A' && c <= 'Z')
+            c = (char)(c - 'A' + 'a');
+        out[i] = c;
+    }
+    out[i] = 0;
+
+    *offset = address - (unsigned long long)module;
+}
+
 /* The stderr stream may already be unusable when a crash happens on a worker
  * thread, so keep a file copy next to the working directory. */
 static void shellWriteCrashFile(EXCEPTION_RECORD* rec)
@@ -5157,18 +5385,11 @@ static void shellWriteCrashFile(EXCEPTION_RECORD* rec)
         int i;
 
         for (i = 0; i < (int)count; ++i) {
-            unsigned long long a = (unsigned long long)frames[i];
-            unsigned long long exe = (unsigned long long)GetModuleHandleA(NULL);
-            unsigned long long av  = (unsigned long long)GetModuleHandleA("libagave.dll");
-            unsigned long long ab  = (unsigned long long)GetModuleHandleA("antjsb.dll");
-            const char* mod = "?";
-            unsigned long long off = a;
+            char name[96];
+            unsigned long long off = 0;
 
-            if (av && a >= av && a < av + 0x2000000ULL) { mod = "libagave"; off = a - av; }
-            else if (ab && a >= ab && a < ab + 0x2000000ULL) { mod = "antjsb"; off = a - ab; }
-            else if (exe && a >= exe && a < exe + 0x100000ULL) { mod = "exe"; off = a - exe; }
-
-            fprintf(f, "  #%02d %s+0x%llx\n", i, mod, off);
+            crashFrameName((unsigned long long)frames[i], name, sizeof(name), &off);
+            fprintf(f, "  #%02d %s+0x%llx\n", i, name[0] ? name : "?", off);
         }
     }
 
@@ -7249,6 +7470,41 @@ static unsigned shotPixel(const unsigned char* bits, int width, int height, int 
     return UI_RGB(p[2], p[1], p[0]);
 }
 
+/* Alpha of a pixel in the same bottom-up DIB. A layered surface has to keep the
+ * rounded corners transparent, which is what a window region cannot do. */
+static unsigned shotAlpha(const unsigned char* bits, int width, int height, int x, int y)
+{
+    return bits[(size_t)(height - 1 - y) * (size_t)width * 4 + (size_t)x * 4 + 3];
+}
+
+/* Pixels inside a rect that are painted with an exact glyph colour. Used to tell
+ * an enabled icon (theme->icon) from a disabled one (theme->text_faint) without
+ * depending on where a stroke happens to land. */
+static int shotCountColor(const unsigned char* bits, int width, int height,
+                          const UiRect* r, unsigned color, int tolerance)
+{
+    int count = 0;
+    int x, y;
+
+    for (y = r->y; y < r->y + r->h; ++y) {
+        for (x = r->x; x < r->x + r->w; ++x) {
+            unsigned c = shotPixel(bits, width, height, x, y);
+            int dr = (int)((c >> 16) & 0xFF) - (int)((color >> 16) & 0xFF);
+            int dg = (int)((c >> 8) & 0xFF) - (int)((color >> 8) & 0xFF);
+            int db = (int)(c & 0xFF) - (int)(color & 0xFF);
+
+            if (dr < 0) dr = -dr;
+            if (dg < 0) dg = -dg;
+            if (db < 0) db = -db;
+
+            if (dr <= tolerance && dg <= tolerance && db <= tolerance)
+                ++count;
+        }
+    }
+
+    return count;
+}
+
 static int sameColor(unsigned got, unsigned want)
 {
     return (got & 0x00FFFFFFu) == (want & 0x00FFFFFFu);
@@ -7442,6 +7698,11 @@ static int uiShotMain(void)
     uiChromeInit(&chrome, kind, g_uiShotDpi, 1, &callbacks);
     shotFillModel(&chrome.model);
 
+    /* Buttons take their enabled state from the model (can_back / can_forward);
+     * without this sync every button drew as enabled, so the sample could never
+     * show a dead arrow next to a live one. */
+    uiChromeSync(&chrome);
+
     uiChromeLayout(&chrome, width, height);
 
     memset(&info, 0, sizeof(info));
@@ -7490,6 +7751,15 @@ static int uiShotMain(void)
         shotBuildMenu(&chrome, memory, width, height);
 
     GdiFlush();
+
+    /* Enabled vs disabled glyphs: the enabled arrow must be painted with
+     * theme->icon, the disabled one must not (it uses text_faint). This is the
+     * "can I go back?" cue the light theme used to lose. */
+    uiCheck("icon-enabled-vs-disabled",
+            shotCountColor((const unsigned char*)bits, width, height,
+                           &chrome.toolbar.back.rect, chrome.theme.icon, 6) > 0 &&
+            shotCountColor((const unsigned char*)bits, width, height,
+                           &chrome.toolbar.forward.rect, chrome.theme.icon, 6) == 0);
 
     stride = width * 4;
     {
@@ -8204,7 +8474,7 @@ static int uiShotMain(void)
                                             bubble->w -
                                                 uiThemeScale(&chrome.theme, 58),
                                             bubble->h / 2),
-                                  chrome.theme.surface_alt));
+                                  chrome.theme.surface));
                 uiCheck("pixel-status-zoom",
                         sameColor(shotPixel((const unsigned char*)bubbleBits,
                                             bubble->w, bubble->h,
@@ -8218,6 +8488,19 @@ static int uiShotMain(void)
                                                 uiThemeScale(&chrome.theme, 5),
                                             bubble->h / 2),
                                   chrome.theme.accent_soft));
+
+                /* Layered presentation needs real alpha: the rounded corners must
+                 * be transparent and the card opaque. A window region would give
+                 * 255 at the corners - the stair-stepped edge this replaced. */
+                uiCheck("pixel-status-alpha-corner",
+                        shotAlpha((const unsigned char*)bubbleBits, bubble->w, bubble->h,
+                                  0, 0) == 0 &&
+                        shotAlpha((const unsigned char*)bubbleBits, bubble->w, bubble->h,
+                                  bubble->w - 1, 0) == 0);
+                uiCheck("pixel-status-alpha-fill",
+                        shotAlpha((const unsigned char*)bubbleBits, bubble->w, bubble->h,
+                                  bubble->w - uiThemeScale(&chrome.theme, 58),
+                                  bubble->h / 2) == 255);
                 SelectObject(bubbleDc, bubbleOld);
             } else {
                 uiCheck("pixel-status-bubble", 0);
@@ -9164,50 +9447,107 @@ static HWND createFindOverlay(ShellWindow* win)
     return bar;
 }
 
-/* Status bubble: same overlay pattern as the find bar, but display only - no
- * hover states, no native controls, so the window proc is tiny. The corners are
- * rounded with a region, otherwise the bubble's square corners would leave
- * stale page pixels behind. */
-static void statusBarUpdateRegion(HWND hwnd, ShellWindow* win)
+/* Status bubble: display only - no hover states, no native controls, so the
+ * window proc is tiny.
+ *
+ * It is a layered popup, not a child with a window region. A region is a 1-bit
+ * mask, so the rounded corners came out stair-stepped no matter how well the
+ * card itself was antialiased. Here the card is drawn with GDI+ into a 32bpp DIB
+ * and pushed with UpdateLayeredWindow, so the corner pixels carry real partial
+ * alpha. A layered *popup* (not child) because UpdateLayeredWindow on a child is
+ * refused on this system; it is owned by the shell, so it hides with it and
+ * never reaches the taskbar. */
+static int statusBarRender(HWND hwnd, ShellWindow* win, const UiRect* bubble)
 {
-    RECT client;
-    HRGN region;
-    int radius;
+    BITMAPINFO info;
+    HDC dc;
+    HBITMAP bitmap;
+    HGDIOBJ old;
+    void* bits = NULL;
+    POINT origin;
+    SIZE size;
+    POINT src = { 0, 0 };
+    BLENDFUNCTION blend;
+    int ok = 0;
 
-    if (!win || !GetClientRect(hwnd, &client) || client.right <= 0)
-        return;
+    if (!hwnd || !win || bubble->w <= 0 || bubble->h <= 0)
+        return 0;
 
-    radius = uiThemeScale(&win->chrome.theme, 8);
-    region = CreateRoundRectRgn(0, 0, client.right + 1, client.bottom + 1,
-                                radius * 2, radius * 2);
+    memset(&info, 0, sizeof(info));
+    info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
+    info.bmiHeader.biWidth = bubble->w;
+    info.bmiHeader.biHeight = -bubble->h;        /* top-down */
+    info.bmiHeader.biPlanes = 1;
+    info.bmiHeader.biBitCount = 32;
+    info.bmiHeader.biCompression = BI_RGB;
 
-    if (region)
-        SetWindowRgn(hwnd, region, TRUE);
+    dc = CreateCompatibleDC(NULL);
+    if (!dc)
+        return 0;
+
+    bitmap = CreateDIBSection(dc, &info, DIB_RGB_COLORS, &bits, NULL, 0);
+
+    if (bitmap && bits) {
+        old = SelectObject(dc, bitmap);
+
+        /* Start fully transparent so only the rounded card is visible. */
+        memset(bits, 0, (size_t)bubble->w * (size_t)bubble->h * 4);
+
+        uiChromePaintStatusOverlay(&win->chrome, dc, bubble->w, bubble->h);
+        GdiFlush();
+
+        origin.x = bubble->x;
+        origin.y = bubble->y;
+        ClientToScreen(win->hwnd, &origin);
+
+        size.cx = bubble->w;
+        size.cy = bubble->h;
+        blend.BlendOp = AC_SRC_OVER;
+        blend.BlendFlags = 0;
+        blend.SourceConstantAlpha = 255;
+        blend.AlphaFormat = AC_SRC_ALPHA;
+
+        /* The DIB has to stay selected while it is presented: deselecting it
+         * first leaves the DC without a surface and UpdateLayeredWindow fails
+         * with ERROR_GEN_FAILURE (31), which is how the bubble vanished. */
+        ok = UpdateLayeredWindow(hwnd, NULL, &origin, &size, dc, &src, 0, &blend,
+                                 ULW_ALPHA) != 0;
+
+        SelectObject(dc, old);
+
+        if (!ok) {
+            static int logged;
+
+            if (!logged) {
+                logged = 1;
+                agbLog(AGB_LOG_SHELL, "status overlay: UpdateLayeredWindow failed %lu",
+                       (unsigned long)GetLastError());
+            }
+        }
+    }
+
+    if (bitmap)
+        DeleteObject(bitmap);
+    DeleteDC(dc);
+    return ok;
 }
 
 static LRESULT CALLBACK statusBarProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
-    ShellWindow* win = windowForHwnd(hwnd);
-
     (void)wParam;
+    (void)lParam;
 
-    if (message == WM_PAINT) {
-        PAINTSTRUCT ps;
-        RECT client;
-        HDC hdc = BeginPaint(hwnd, &ps);
-
-        if (win && GetClientRect(hwnd, &client))
-            uiChromePaintStatusOverlay(&win->chrome, hdc, client.right, client.bottom);
-
-        EndPaint(hwnd, &ps);
-        return 0;
-    }
-
-    if (message == WM_ERASEBKGND)
+    switch (message) {
+    case WM_NCHITTEST:
+        /* Display only: the click belongs to the page underneath. */
+        return HTTRANSPARENT;
+    case WM_MOUSEACTIVATE:
+        return MA_NOACTIVATE;
+    case WM_ERASEBKGND:
         return 1;
-
-    if (message == WM_SIZE) {
-        statusBarUpdateRegion(hwnd, win);
+    case WM_PAINT:
+        /* Presented by UpdateLayeredWindow, never by GDI on this surface. */
+        ValidateRect(hwnd, NULL);
         return 0;
     }
 
@@ -9226,11 +9566,10 @@ static void syncStatusOverlay(void)
             g_cur->statusBar = createStatusOverlay(g_cur);
 
         if (g_cur->statusBar) {
-            placeChild(g_cur->statusBar, bubble->x, bubble->y, bubble->w, bubble->h);
-            ShowWindow(g_cur->statusBar, SW_SHOW);
-            SetWindowPos(g_cur->statusBar, HWND_TOP, 0, 0, 0, 0,
-                         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
-            InvalidateRect(g_cur->statusBar, NULL, FALSE);
+            if (statusBarRender(g_cur->statusBar, g_cur, bubble))
+                ShowWindow(g_cur->statusBar, SW_SHOWNA);
+            else
+                ShowWindow(g_cur->statusBar, SW_HIDE);
         }
     } else if (g_cur->statusBar) {
         ShowWindow(g_cur->statusBar, SW_HIDE);
@@ -9244,9 +9583,9 @@ static HWND createStatusOverlay(ShellWindow* win)
     if (!win || !win->hwnd || !g_instance)
         return NULL;
 
-    bar = CreateWindowExA(0, "MiniShellStatusBar", "",
-                          WS_CHILD | WS_CLIPSIBLINGS, 0, 0, 0, 0,
-                          win->hwnd, NULL, g_instance, NULL);
+    bar = CreateWindowExA(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+                          "MiniShellStatusBar", "", WS_POPUP,
+                          0, 0, 0, 0, win->hwnd, NULL, g_instance, NULL);
 
     if (!bar) {
         agbLog(AGB_LOG_SHELL, "status overlay create failed: %lu",

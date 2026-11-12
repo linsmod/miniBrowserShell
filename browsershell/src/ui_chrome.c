@@ -299,16 +299,28 @@ void uiChromeLayout(UiChrome* chrome, int width, int height)
                           strcmp(model->status, "Ready") != 0;
         int zoomed = model->zoom != 100;
         int bubble_h = status_h;
+        int pad;
         int zoom_w = zoomed ? scale(theme, 46) + scale(theme, 8) : 0;
         int max_w = chrome->content.w - scale(theme, 24);
         int text_w = 0;
+        int text_h = 0;
         int w;
 
         if ((has_message || zoomed) && max_w > scale(theme, 90)) {
             uiMeasureText(theme, theme->font_small,
-                          has_message ? model->status : "", &text_w, NULL);
+                          has_message ? model->status : "", &text_w, &text_h);
 
-            w = scale(theme, 24) + text_w + zoom_w + scale(theme, 12);
+            /* Left/right padding mirrors the vertical one: the text is centred in
+             * the bubble, so the air above it is the air that belongs beside it.
+             * A fixed 8-12 DIP padding was visibly wider than the top/bottom. */
+            if (text_h <= 0 || text_h > bubble_h - scale(theme, 4))
+                text_h = bubble_h - scale(theme, 4);
+
+            pad = (bubble_h - text_h) / 2;
+            if (pad < scale(theme, 2))
+                pad = scale(theme, 2);
+
+            w = pad * 2 + text_w + zoom_w;
 
             if (w > max_w)
                 w = max_w;
@@ -319,9 +331,9 @@ void uiChromeLayout(UiChrome* chrome, int width, int height)
                 chrome->content.x + scale(theme, 8),
                 height - bubble_h - scale(theme, 8), w, bubble_h);
             chrome->statusbar.text = uiRectMake(
-                chrome->statusbar.rect.x + scale(theme, 12),
-                chrome->statusbar.rect.y,
-                w - scale(theme, 24) - zoom_w, bubble_h);
+                chrome->statusbar.rect.x + pad,
+                chrome->statusbar.rect.y + pad,
+                w - pad * 2 - zoom_w, bubble_h - pad * 2);
 
             if (zoomed) {
                 int zh = bubble_h - scale(theme, 8);
@@ -384,6 +396,13 @@ static void paintAddress(UiChrome* chrome, UiPainter* painter)
     uiButtonPaint(&bar->go, theme, painter);
 }
 
+/* The accent progress line under the toolbar is kept but not shown: the engine's
+ * progress callback is too coarse to look like real progress (it jumps 10% at a
+ * time and sat at 8% on every start), so the bar read as animation, not data.
+ * The loading state is still visible through the reload button turning into a
+ * stop button. */
+#define CHROME_SHOW_PROGRESS 0
+
 static void paintToolbar(UiChrome* chrome, UiPainter* painter)
 {
     UiTheme* theme = &chrome->theme;
@@ -407,7 +426,7 @@ static void paintToolbar(UiChrome* chrome, UiPainter* painter)
     uiFillRect(painter, uiRectMake(0, bar->rect.y + bar->rect.h - scale(theme, 1),
                                    bar->rect.w, scale(theme, 1)), theme->border);
 
-    if (chrome->model.loading) {
+    if (CHROME_SHOW_PROGRESS && chrome->model.loading) {
         percent = CLAMP(chrome->model.progress, 0, 100);
 
         if (percent <= 0)
@@ -507,11 +526,14 @@ static void paintStatusBubble(UiChrome* chrome, UiPainter* painter, int dx, int 
     if (bar->rect.w <= 0 || bar->rect.h <= 0)
         return;
 
-    uiFillRoundRect(painter, rect, scale(theme, 8), theme->surface_alt);
+    /* Same colours as the active tab (surface + text): the bubble is part of the
+     * shell's own chrome, not a page overlay, and it should read as one family
+     * with the tab it belongs to. */
+    uiFillRoundRect(painter, rect, scale(theme, 8), theme->surface);
     uiStrokeRoundRect(painter, rect, scale(theme, 8), theme->border, 1.0f);
 
     uiText(painter, chrome->model.status, text, theme->font_small,
-           theme->text_muted, UI_ALIGN_LEFT);
+           theme->text, UI_ALIGN_LEFT);
 
     if (chrome->model.zoom != 100 && bar->zoom.w > 0) {
         char label[32];

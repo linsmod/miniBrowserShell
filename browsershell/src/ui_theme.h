@@ -64,7 +64,7 @@ typedef struct UiTheme {
     unsigned chrome;        /* tab strip */
     unsigned toolbar;       /* toolbar + find row */
     unsigned surface;       /* active tab / popup */
-    unsigned surface_alt;   /* status bar / inactive hover */
+    unsigned surface_alt;   /* unused: the status bubble follows the active tab */
     unsigned hover;
     unsigned pressed;
     unsigned field;         /* address pill / find pill */

@@ -50,7 +50,10 @@ enum {
     MBV_EV_STATUS,
     MBV_EV_ERROR,
     MBV_EV_DOCREADY,
-    MBV_EV_MESSAGE
+    MBV_EV_MESSAGE,
+    /* A popup the shell refused: destroyed later, never from inside the engine's
+     * onCreateView callback (that crashed the next window.open). */
+    MBV_EV_DESTROY
 };
 
 typedef struct MbEvent {
@@ -635,6 +638,14 @@ static void deliverEvent(MbView* v, MbEvent* e)
         if (v->cb.on_message)
             v->cb.on_message((AgaveWebView*)v, e->a ? e->a : "", v->user);
         break;
+
+    case MBV_EV_DESTROY:
+        /* The popup was refused. By now the engine has returned from its
+         * onCreateView callback, so the webview can go away safely; doing it
+         * inside that callback left the engine pointing at freed memory and the
+         * next window.open faulted in mb132_x64.dll. */
+        agave_webview_destroy((AgaveWebView*)v);
+        break;
     }
 }
 
@@ -841,7 +852,15 @@ static mbWebView MB_CALL_TYPE mbvOnCreateView(mbWebView wv, void* param,
     if (from->cb.on_new_window) {
         if (!from->cb.on_new_window((AgaveWebView*)from, (AgaveWebView*)popup,
                                     url ? url : "", from->user)) {
-            agave_webview_destroy((AgaveWebView*)popup);
+            /* Off screen right away, destroyed on the control's own message
+             * queue: mbDestroyWebView inside this callback corrupted the engine
+             * (the following window.open crashed in mb132_x64.dll). */
+            if (popup->wv)
+                mbShowWindow(popup->wv, 0);
+            if (popup->hwnd)
+                ShowWindow(popup->hwnd, SW_HIDE);
+
+            postEvent(popup, MBV_EV_DESTROY, NULL, NULL, 0, 0);
             return NULL;
         }
     }

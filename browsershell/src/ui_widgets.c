@@ -288,6 +288,14 @@ void uiButtonPaint(UiButton* button, const UiTheme* theme, UiPainter* painter)
     }
 
     uiIcon(painter, button->icon, icon, color, (1.7f * theme->scale));
+
+    /* Enabled glyphs are stamped a second time at the very same spot: the
+     * antialiased edge pixels accumulate, so the stroke reads darker and bolder
+     * than a single pass. That is all the "can go back" cue needs - no second
+     * palette entry and no per-state stroke width. Disabled stays one faint
+     * pass, which is what makes the two states tell apart in the light theme. */
+    if (button->enabled)
+        uiIcon(painter, button->icon, icon, color, (1.7f * theme->scale));
 }
 
 int uiButtonHit(const UiButton* button, int x, int y)

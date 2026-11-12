@@ -4,8 +4,11 @@
  * The element highlight must not touch the page at all: an injected DOM node can
  * stretch the document, create scrollbars, or get captured by an ancestor's
  * transform. So the page only *reports* the target's getBoundingClientRect();
- * the box is painted here, in a click-through child window that sits above the
- * webview and is clipped by the window region.
+ * the frame is painted here, in a click-through layered popup above the webview.
+ *
+ * The frame is the whole surface: no label is drawn next to it. The element info
+ * goes to the shell's bottom-left status bubble, which is sized for text and is
+ * never clipped by a tiny target (a 2x2 element used to cut its own label away).
  */
 
 #ifndef UI_INSPECT_H

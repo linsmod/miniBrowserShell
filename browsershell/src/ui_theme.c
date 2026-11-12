@@ -245,9 +245,9 @@ static void applyPalette(UiTheme* theme)
         theme->field = UI_RGB(0x28, 0x28, 0x28);
         theme->field_hover = UI_RGB(0x45, 0x45, 0x45);
         /* Hover fill == the pill's hover border colour ("背景色和边框一致"), so
-         * the pill reads as one flat shape while the pointer is on it. #5A5A5A
-         * was blinding next to a #3C3C3C toolbar; #454545 keeps the step visible
-         * without a flash. */
+         * the pill reads as one flat shape while the pointer is on it. #454545
+         * is the sampled Chrome value and reads well against the #3C3C3C
+         * toolbar; the light theme is the one that needed a smaller step. */
         theme->border_strong = UI_RGB(0x45, 0x45, 0x45);
         theme->field_focus = UI_RGB(0x3C, 0x3C, 0x3C);
         theme->border = UI_RGB(0x37, 0x37, 0x37);
@@ -290,11 +290,17 @@ static void applyPalette(UiTheme* theme)
         theme->hover = UI_RGB(0xE8, 0xEA, 0xED);
         theme->pressed = UI_RGB(0xDA, 0xDC, 0xE0);
         theme->field = UI_RGB(0xF1, 0xF3, 0xF4);
-        theme->field_hover = UI_RGB(0xBD, 0xC1, 0xC6);
+        /* One small step darker than the pill, not #BDC1C6: that was a grey
+         * block, and the pointer barely has to change the field's look. */
+        theme->field_hover = UI_RGB(0xE6, 0xE9, 0xEC);
         theme->field_focus = UI_RGB(0xFF, 0xFF, 0xFF);
         theme->border = UI_RGB(0xDA, 0xDC, 0xE0);
-        theme->border_strong = UI_RGB(0xBD, 0xC1, 0xC6);
-        theme->icon = UI_RGB(0x5F, 0x63, 0x68);
+        theme->border_strong = UI_RGB(0xE6, 0xE9, 0xEC);
+        /* Enabled glyphs are the ones that must read as "available": at #5F6368
+         * they were only ~35 levels away from text_faint, so a can-go-back arrow
+         * and a dead one looked alike. Same graphite as the text now; the
+         * disabled state keeps text_faint, which is the real separator. */
+        theme->icon = UI_RGB(0x20, 0x21, 0x24);
         theme->text = UI_RGB(0x20, 0x21, 0x24);
         theme->text_muted = UI_RGB(0x5F, 0x63, 0x68);
         theme->text_faint = UI_RGB(0x80, 0x86, 0x8B);

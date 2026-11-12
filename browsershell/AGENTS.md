@@ -3,6 +3,12 @@
 MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webview_*` 适配层 +
 引擎无关的自绘 UI）。本文件只放**测试纪律**和**最容易踩的坑**，功能说明见 `README.md`。
 
+## 提交纪律
+
+**每轮改动编译通过、headless 检查通过后，直接提交**（用户明确要求"下次改了记得提交"）。
+仓库根在工作区顶层（`git -C <repo> status`），不要在 `%TEMP%` 里做临时仓库。
+提交信息用英文、写清"改了什么 + 为什么"，一个主题一条，不要攒一堆无关改动。
+
 ## 测试纪律（最重要）
 
 **所有测试都必须是 headless probe，绝不碰桌面。** 这是硬性要求，不是偏好：
@@ -28,6 +34,7 @@ MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webv
 | `tools/screenshot.ps1` | headless 截图：`--probe --shot [-Rect x,y,w,h]` |
 | `tools/inspect-check.ps1` | 元素标记（inspect）页面半边的回归：注入 `assets/inspect.js`，断言上报的 rect |
 | `tools/inspect_hang.ps1` | 卡死时挂 cdb 抓全部线程栈（只读，摘下后恢复） |
+| `tools/layered-dib-check.ps1` | 验证 `UpdateLayeredWindow` 的硬性条件：源 DC 里必须还选中着那块 DIB（未选中 → 失败 err=31） |
 | `tools/dlserver.ps1` | 下载/新窗口回归用的本地 HTTP 服务 |
 
 ## 引擎侧已知坑（会静默失败）
@@ -39,10 +46,18 @@ MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webv
 - 首次导航提交前不能 `mbReload`（会丢掉在途加载且不重发）。
 - 引擎与宿主的 `on_message` 回调在 blink 线程，必须 `postEvent` 到自己窗口再在 UI 线程处理。
 - 页面里的覆盖层（inspector.js 那类）会撑出滚动条；元素标记改由宿主窗口绘制（`ui_inspect.c`），
-  页面只上报 `getBoundingClientRect()`。
+  页面只上报 `getBoundingClientRect()`。标记窗口只画那个框，元素信息显示在左下角状态气泡
+  （`updateStatus`）：贴着元素画标签会被元素自身尺寸裁掉，1x1 的元素等于什么都看不到。
 - **webview 上方不要放任何窗口**：哪怕是一个 1/255 alpha 的分层子窗口，只要盖在页面控件上，
-  resize 后页面就不再重绘（停在旧帧）。inspect 期的输入拦截改用 `WH_MOUSE_LL` 钩子
-  （`main.c` 的 `inspectMouseHook`）：只吞事件不画东西，页面照常重绘。
+  resize 后页面就不再重绘（停在旧帧）。
+- **`UpdateLayeredWindow` 的源 DC 里必须还选中着那块 DIB**：先把 bitmap `SelectObject` 还原再调用，
+  会失败并返回 err=31（`ERROR_GEN_FAILURE`），窗口就"消失"了（状态泡泡踩过）。
+  `tools/layered-dib-check.ps1` 可以把这条规则单独复现：选中=成功，未选中=31。
+- **layered child 不可用**：本机对 `WS_CHILD + WS_EX_LAYERED` 调 `UpdateLayeredWindow` 返回 87，
+  只能做成 owned popup（创建时带 `WS_EX_LAYERED` 的 popup 是正常的）。
+- **`WH_MOUSE_LL` 钩子返回 1 会冻住鼠标**：低层鼠标钩子的返回值是"丢弃该事件"，对 `WM_MOUSEMOVE`
+  返回非 0 等于把光标的移动也丢掉，鼠标就动不了了（本机实测锁死）。输入拦截必须走控件自己的消息路径
+  —— `agave_webview_set_input_capture`（`mb_view.c` 的 `mbvViewProc`），光标照常移动、页面只是收不到消息。
 
 ## 构建
 

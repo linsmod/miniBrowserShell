@@ -25,8 +25,6 @@
 
 #define INSPECT_CLASS       L"MiniShellInspectOverlay"
 #define INSPECT_BORDER_DIP  2
-#define INSPECT_CHIP_H_DIP  18
-#define INSPECT_PAD_DIP     4
 
 typedef struct InspectSurface {
     HDC     dc;
@@ -91,176 +89,45 @@ static int surfaceEnsure(int w, int h)
     return 1;
 }
 
-static void inspectChipRect(const UiInspect* insp, RECT* chip, const RECT* mark, int* chipW)
+/* ------------------------------------------------------------------------- */
+/* drawing                                                                   */
+/* ------------------------------------------------------------------------- */
+
+/* The surface is grown, never shrunk, so its stride is usually wider than the
+ * mark. Clearing w*h*4 bytes straight through therefore misses the right end of
+ * the top rows and leaves the previous frame there - the mark showed a second,
+ * half-transparent band. Clear row by row with the real stride. */
+static void surfaceClear(InspectSurface* surface, int w, int h)
 {
-    int pad = inspScale(insp, INSPECT_PAD_DIP);
-    int border = inspScale(insp, INSPECT_BORDER_DIP);
-    int textW = 0;
-    int textH = 0;
-    int chipH;
-    int w;
+    unsigned char* rows = (unsigned char*)surface->bits;
+    size_t stride = (size_t)surface->w * 4;
+    int y;
 
-    if (insp->label[0] && insp->theme)
-        uiMeasureText(insp->theme, insp->theme->font_small, insp->label, &textW, &textH);
-
-    if (textW < 0)
-        textW = 0;
-
-    chipH = inspScale(insp, INSPECT_CHIP_H_DIP);
-    if (textH + 6 > chipH)
-        chipH = textH + 6;
-
-    w = textW + pad * 2;
-    *chipW = w;
-
-    chip->left = mark->left - border;
-    chip->right = chip->left + w;
-    chip->top = mark->top - border - chipH - 2;
-
-    /* No room above (element at the top edge): sit inside the box instead of
-     * being clipped away. */
-    if (chip->top < 0)
-        chip->top = mark->top + 2;
-
-    chip->bottom = chip->top + chipH;
+    for (y = 0; y < h; ++y)
+        memset(rows + (size_t)y * stride, 0, (size_t)w * 4);
 }
 
-/* The whole thing (box + chip), clipped to the content rect. 0 = nothing to
- * draw. All coordinates are in content (page) space. */
-static int inspectLayout(const UiInspect* insp, RECT* total, RECT* box, RECT* chip, int* chipW)
+/* Pushes a surface to a layered popup at screen coordinates. The surface holds
+ * exactly the pixels to show: nothing else is composited over the page. */
+static int presentLayered(HWND hwnd, InspectSurface* surface, int x, int y, int w, int h)
 {
-    RECT mark;
-    int border = inspScale(insp, INSPECT_BORDER_DIP);
-
-    *chipW = 0;
-
-    mark.left = insp->mark_x;
-    mark.top = insp->mark_y;
-    mark.right = insp->mark_x + insp->mark_w;
-    mark.bottom = insp->mark_y + insp->mark_h;
-
-    if (mark.left < 0) mark.left = 0;
-    if (mark.top < 0) mark.top = 0;
-    if (mark.right > insp->w) mark.right = insp->w;
-    if (mark.bottom > insp->h) mark.bottom = insp->h;
-
-    if (mark.right - mark.left < 1 || mark.bottom - mark.top < 1)
-        return 0;
-
-    box->left = mark.left - border;
-    box->top = mark.top - border;
-    box->right = mark.right + border;
-    box->bottom = mark.bottom + border;
-
-    *total = *box;
-
-    if (insp->label[0]) {
-        inspectChipRect(insp, chip, &mark, chipW);
-        if (*chipW > 0) {
-            if (chip->left < total->left) total->left = chip->left;
-            if (chip->top < total->top) total->top = chip->top;
-            if (chip->right > total->right) total->right = chip->right;
-            if (chip->bottom > total->bottom) total->bottom = chip->bottom;
-        }
-    }
-
-    return 1;
-}
-
-static void inspectDraw(UiInspect* insp, HDC hdc, int width, int height,
-                        const RECT* box, const RECT* chip, int chipW)
-{
-    UiTheme* theme = insp->theme;
-    UiPainter painter;
-    int border;
-
-    if (!theme)
-        return;
-
-    if (!uiPainterBegin(&painter, hdc, theme, width, height)) {
-        agbLog(AGB_LOG_SHELL, "inspect paint: painter failed %dx%d", width, height);
-        return;
-    }
-
-    border = inspScale(insp, INSPECT_BORDER_DIP);
-
-    uiFillRect(&painter,
-               uiRectMake(box->left, box->top, box->right - box->left, box->bottom - box->top),
-               (theme->accent & 0x00FFFFFFu) | 0x33000000u);
-    uiStrokeRoundRect(&painter,
-                      uiRectMake(box->left, box->top, box->right - box->left, box->bottom - box->top),
-                      0, theme->accent, (float)border);
-
-    if (chipW > 0 && insp->label[0]) {
-        UiRect chipRect = uiRectMake(chip->left, chip->top,
-                                     chip->right - chip->left, chip->bottom - chip->top);
-        int pad = inspScale(insp, INSPECT_PAD_DIP);
-
-        uiFillRoundRect(&painter, chipRect, 3, theme->accent);
-        uiText(&painter, insp->label,
-               uiRectMake(chipRect.x + pad, chipRect.y + 1,
-                          chipRect.w - pad * 2, chipRect.h - 2),
-               theme->font_small, 0xFFFFFFFFu, UI_ALIGN_LEFT);
-    }
-
-    uiPainterEnd(&painter);
-}
-
-static void inspectRender(UiInspect* insp)
-{
-    RECT total;
-    RECT box;
-    RECT chip;
-    RECT chipT;
-    int chipW = 0;
-    int w, h;
     POINT origin;
     SIZE size;
-    POINT src = { 0, 0 };
+    POINT src;
     BLENDFUNCTION blend;
 
-    if (!insp || !insp->hwnd || !insp->has_mark)
-        return;
-
-    if (!inspectLayout(insp, &total, &box, &chip, &chipW))
-        return;
-
-    w = total.right - total.left;
-    h = total.bottom - total.top;
-    if (w < 1 || h < 1)
-        return;
-
-    if (!surfaceEnsure(w, h))
-        return;
-
-    /* Start from transparent: the previous mark cannot survive. */
-    memset(g_surface.bits, 0, (size_t)w * h * 4);
-
-    box.left -= total.left;
-    box.top -= total.top;
-    box.right -= total.left;
-    box.bottom -= total.top;
-
-    chipT = chip;
-    chipT.left -= total.left;
-    chipT.top -= total.top;
-    chipT.right -= total.left;
-    chipT.bottom -= total.top;
-
-    inspectDraw(insp, g_surface.dc, w, h, &box, &chipT, chipW);
-
-    origin.x = insp->x + total.left;
-    origin.y = insp->y + total.top;
-    ClientToScreen(insp->parent, &origin);
-
+    origin.x = x;
+    origin.y = y;
     size.cx = w;
     size.cy = h;
+    src.x = 0;
+    src.y = 0;
     blend.BlendOp = AC_SRC_OVER;
     blend.BlendFlags = 0;
     blend.SourceConstantAlpha = 255;
     blend.AlphaFormat = AC_SRC_ALPHA;
 
-    if (!UpdateLayeredWindow(insp->hwnd, NULL, &origin, &size, g_surface.dc, &src, 0,
+    if (!UpdateLayeredWindow(hwnd, NULL, &origin, &size, surface->dc, &src, 0,
                              &blend, ULW_ALPHA)) {
         static int logged;
 
@@ -269,10 +136,118 @@ static void inspectRender(UiInspect* insp)
             agbLog(AGB_LOG_SHELL, "inspect overlay: UpdateLayeredWindow failed %lu",
                    (unsigned long)GetLastError());
         }
+        return 0;
+    }
+
+    ShowWindow(hwnd, SW_SHOWNA);
+    return 1;
+}
+
+/* The page area in screen pixels, taken from the control itself. Never from the
+ * cached chrome content rect: a rect computed before the DPI/layout settled put
+ * the mark off by the toolbar height until the next resize fixed it. */
+static int pageArea(const UiInspect* insp, RECT* area)
+{
+    POINT tl = { 0, 0 };
+
+    if (insp->target) {
+        RECT client;
+
+        if (GetClientRect(insp->target, &client) &&
+            ClientToScreen(insp->target, &tl)) {
+            area->left = tl.x + client.left;
+            area->top = tl.y + client.top;
+            area->right = tl.x + client.right;
+            area->bottom = tl.y + client.bottom;
+            return 1;
+        }
+    }
+
+    if (insp->parent && ClientToScreen(insp->parent, &tl)) {
+        area->left = tl.x + insp->x;
+        area->top = tl.y + insp->y;
+        area->right = area->left + insp->w;
+        area->bottom = area->top + insp->h;
+        return 1;
+    }
+
+    return 0;
+}
+
+/* The element rect, clipped to the page and expanded by the frame. 0 = nothing
+ * visible. Both rects are in screen pixels. */
+static int markBox(const UiInspect* insp, const RECT* area, RECT* box)
+{
+    int border = inspScale(insp, INSPECT_BORDER_DIP);
+
+    box->left = area->left + insp->mark_x;
+    box->top = area->top + insp->mark_y;
+    box->right = box->left + insp->mark_w;
+    box->bottom = box->top + insp->mark_h;
+
+    if (box->left < area->left) box->left = area->left;
+    if (box->top < area->top) box->top = area->top;
+    if (box->right > area->right) box->right = area->right;
+    if (box->bottom > area->bottom) box->bottom = area->bottom;
+
+    if (box->right - box->left < 1 || box->bottom - box->top < 1)
+        return 0;
+
+    /* The frame is inside the surface: a stroke centred on the edge would be
+     * clipped in half, and on a 2x2 element there is nothing left to see. */
+    box->right += border;
+    box->bottom += border;
+
+    if (box->right > area->right) box->right = area->right;
+    if (box->bottom > area->bottom) box->bottom = area->bottom;
+
+    return box->right - box->left >= 1 && box->bottom - box->top >= 1;
+}
+
+/* Only the frame is drawn here. The element info goes to the shell's bottom-left
+ * status bubble (updateStatus): as a chip next to the mark it had to compete
+ * with the element's own size, and a 2x2 target clipped it to nothing. */
+static void inspectRender(UiInspect* insp)
+{
+    RECT area;
+    RECT box;
+    int w, h;
+    int border;
+    UiPainter painter;
+
+    if (!insp || !insp->hwnd || !insp->has_mark)
+        return;
+
+    if (!insp->theme || !pageArea(insp, &area) || !markBox(insp, &area, &box)) {
+        ShowWindow(insp->hwnd, SW_HIDE);
         return;
     }
 
-    ShowWindow(insp->hwnd, SW_SHOWNA);
+    w = box.right - box.left;
+    h = box.bottom - box.top;
+
+    if (!surfaceEnsure(w, h))
+        return;
+
+    /* Start from transparent: the previous mark cannot survive. */
+    surfaceClear(&g_surface, w, h);
+
+    if (!uiPainterBegin(&painter, g_surface.dc, insp->theme, w, h)) {
+        agbLog(AGB_LOG_SHELL, "inspect paint: painter failed %dx%d", w, h);
+        return;
+    }
+
+    border = inspScale(insp, INSPECT_BORDER_DIP);
+
+    uiFillRect(&painter, uiRectMake(0, 0, w, h),
+               (insp->theme->accent & 0x00FFFFFFu) | 0x33000000u);
+    uiStrokeRoundRect(&painter, uiRectMake(border / 2, border / 2,
+                                           w - border, h - border),
+                      0, insp->theme->accent, (float)border);
+
+    uiPainterEnd(&painter);
+
+    presentLayered(insp->hwnd, &g_surface, box.left, box.top, w, h);
 }
 
 static LRESULT CALLBACK inspectProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
@@ -365,17 +340,8 @@ void uiInspectSetMark(UiInspect* insp, int x, int y, int w, int h, const char* l
     if (!insp || !insp->hwnd)
         return;
 
-    /* Clip to the content rect: a target half scrolled out keeps its visible
-     * part, nothing is drawn outside the page. */
-    if (x < 0) { w += x; x = 0; }
-    if (y < 0) { h += y; y = 0; }
-    if (x + w > insp->w) w = insp->w - x;
-    if (y + h > insp->h) h = insp->h - y;
-
-    if (w <= 0 || h <= 0) {
-        uiInspectClear(insp);
-        return;
-    }
+    /* No clipping here: the renderer clips against the page area it reads from
+     * the live control, so a stale content rect cannot cut the mark short. */
 
     insp->has_mark = 1;
     insp->mark_x = x;
