@@ -657,6 +657,11 @@ static void paintKeyboardFocus(UiChrome* chrome, UiPainter* painter, int dx, int
     if (chrome->focus_part == UI_PART_NONE)
         return;
 
+    /* The find field is the native EDIT: its ring is the pill's own focus ring,
+     * so a second painted rect on top would double it. */
+    if (chrome->focus_part == UI_PART_FIND_FIELD)
+        return;
+
     /* Find-bar buttons live in their own overlay window. */
     if (chrome->focus_part == UI_PART_FIND_PREV ||
         chrome->focus_part == UI_PART_FIND_NEXT ||
@@ -832,17 +837,19 @@ static UiRect partRect(UiChrome* chrome, UiPart part, int index)
 
 /* The painted buttons that can take the keyboard focus ring, in visual order
  * (left to right): tab-search, new tab, back, forward, reload, [address field],
- * menu, then the find-bar buttons. The address field is a native EDIT with its
- * own focus state, so it is an *anchor* here: never a stop of its own, but the
- * place a Tab out of the field starts from (so forward goes right into the menu
- * and Shift+Tab goes left into reload, instead of both jumping to the far left
- * of the toolbar). */
+ * menu. The address field is a native EDIT with its own focus state, so it is an
+ * *anchor* here: never a stop of its own, but the place a Tab out of the field
+ * starts from (so forward goes right into the menu and Shift+Tab goes left into
+ * reload, instead of both jumping to the far left of the toolbar).
+ *
+ * The find bar is NOT part of this ring: it has its own cycle (see
+ * uiChromeFindFocusStep), which wraps inside the bar so Tab never leaks from one
+ * ring into the other. */
 static const int kFocusOrder[] = {
     UI_PART_TAB_SEARCH, UI_PART_TAB_NEW,
     UI_PART_BACK, UI_PART_FORWARD, UI_PART_RELOAD,
     UI_PART_ADDRESS,
-    UI_PART_MENU,
-    UI_PART_FIND_PREV, UI_PART_FIND_NEXT, UI_PART_FIND_CLOSE
+    UI_PART_MENU
 };
 
 static int focusStopVisible(UiChrome* chrome, int part)
@@ -855,6 +862,7 @@ static int focusStopVisible(UiChrome* chrome, int part)
     case UI_PART_RELOAD:     return chrome->toolbar.reload.visible;
     case UI_PART_MENU:       return chrome->toolbar.menu.visible;
     case UI_PART_ADDRESS:    return !chrome->offscreen;  /* native EDIT: a stop in the cycle */
+    case UI_PART_FIND_FIELD: return chrome->model.find_visible;
     case UI_PART_FIND_PREV:
     case UI_PART_FIND_NEXT:
     case UI_PART_FIND_CLOSE: return chrome->model.find_visible;
@@ -941,6 +949,50 @@ int uiChromeFocusStepFrom(UiChrome* chrome, int anchor, int forward)
 int uiChromeFocusStep(UiChrome* chrome, int forward)
 {
     return uiChromeFocusStepFrom(chrome, UI_PART_NONE, forward);
+}
+
+/* The find bar's own ring: field, prev, next, close, and back to the field. It
+ * wraps inside the bar - the two rings never hand focus to each other, so Tab in
+ * the find bar cannot walk into the toolbar (and vice versa: kFocusOrder no
+ * longer carries the find buttons). */
+int uiChromeFindFocusStepFrom(UiChrome* chrome, int anchor, int forward)
+{
+    static const int order[] = {
+        UI_PART_FIND_FIELD, UI_PART_FIND_PREV,
+        UI_PART_FIND_NEXT, UI_PART_FIND_CLOSE
+    };
+    int count = (int)(sizeof(order) / sizeof(order[0]));
+    int index = -1;
+    int i;
+
+    if (!chrome || !chrome->model.find_visible)
+        return UI_PART_NONE;
+
+    if (chrome->focus_part != UI_PART_NONE)
+        anchor = chrome->focus_part;
+
+    for (i = 0; i < count; ++i) {
+        if (order[i] == anchor) {
+            index = i;
+            break;
+        }
+    }
+
+    /* No anchor (the native EDIT had the focus): start from the field so the
+     * first Tab lands on prev and Shift+Tab on close. */
+    i = index >= 0 ? index : (forward ? 0 : 3);
+    i = (i + (forward ? 1 : -1) + count) % count;
+
+    focusMarkDirty(chrome, chrome->focus_part);
+    chrome->focus_part = order[i];
+    focusMarkDirty(chrome, order[i]);
+
+    return chrome->focus_part;
+}
+
+int uiChromeFindFocusStep(UiChrome* chrome, int forward)
+{
+    return uiChromeFindFocusStepFrom(chrome, UI_PART_NONE, forward);
 }
 
 int uiChromeActivateFocus(UiChrome* chrome)

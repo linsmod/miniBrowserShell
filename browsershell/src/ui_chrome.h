@@ -152,6 +152,10 @@ int uiChromeMouse(UiChrome* chrome, const UiMouseEvent* event);
  * the new part, or UI_PART_NONE when the walk left the chrome (the shell then
  * hands the keyboard to the page or to the address field). */
 int  uiChromeFocusStep(UiChrome* chrome, int forward);
+/* The find bar's own ring (field, prev, next, close), which wraps inside the bar
+ * and never mixes with the chrome ring above. */
+int  uiChromeFindFocusStep(UiChrome* chrome, int forward);
+int  uiChromeFindFocusStepFrom(UiChrome* chrome, int anchor, int forward);
 /* Same walk, but starting from `anchor` (a UiPart such as UI_PART_ADDRESS that
  * is not itself a stop) instead of from the current ring position. */
 int  uiChromeFocusStepFrom(UiChrome* chrome, int anchor, int forward);

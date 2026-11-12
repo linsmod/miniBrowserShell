@@ -76,6 +76,12 @@
  * onCommandDropped). */
 #define AGW_SHELL_STATUS (WM_APP + 24)
 
+/* Coalesced find update: the native EDIT delivers an IME word commit as several
+ * back-to-back EN_CHANGEs (first '程', then '程度'), and searching each of them
+ * jumped the page to a hit for the half-word. Posting one message makes the
+ * whole burst collapse into a single search of the final text. */
+#define AGW_FIND_UPDATE (WM_APP + 34)
+
 /* Chrome metrics come from the active window's theme (DPI-scaled). */
 #define CHROME        (&g_cur->chrome)
 #define TAB_HEIGHT    (CHROME->theme.tabstrip_h)
@@ -172,6 +178,7 @@ static int  g_findIndex;
 static int  g_findTotal;
 static char g_findQuery[256];      /* text of the last searched query */
 static int  g_findComposing;       /* an IME composition owns the query field */
+static int  g_findUpdatePending;   /* an AGW_FIND_UPDATE is already queued */
 #define g_closed      (g_cur->closed)
 #define g_closedCount (g_cur->closedCount)
 
@@ -3813,11 +3820,29 @@ static void addBookmarkCurrent(void)
 
 static void findQueryChanged(void);
 
+/* One search per burst of edits: an IME word commit arrives as several
+ * EN_CHANGEs inside the same message, and each one used to run the page. The
+ * queued message runs after the burst, so only the final text is searched. */
+static void findPostUpdate(void)
+{
+    if (!g_hwnd || !g_findVisible || g_findUpdatePending)
+        return;
+
+    g_findUpdatePending = 1;
+
+    if (!PostMessageW(g_hwnd, AGW_FIND_UPDATE, 0, 0))
+        g_findUpdatePending = 0;
+}
+
 static void toggleFind(void)
 {
     g_findVisible = !g_findVisible;
 
     agbLog(AGB_LOG_SHELL, "find bar %s", g_findVisible ? "on" : "off");
+
+    /* The find ring dies with the bar (and a stale ring from the chrome ring
+     * must not stay painted while the bar opens). */
+    uiChromeFocusClear(CHROME);
 
     /* The counter belongs to the query that produced it: opening a bar or
      * closing it starts from "0/0" until the page answers. The query text is
@@ -4249,6 +4274,32 @@ static void invalidateChromeDirty(HWND hwnd)
         InvalidateRect(g_cur->statusBar, NULL, FALSE);
 }
 
+/* The find bar's keyboard ring (field / prev / next / close). It is separate
+ * from the chrome ring so Tab cannot walk from one into the other; the native
+ * EDIT is the field stop and the three buttons are painted, so the shell takes
+ * the keyboard when one of them has the ring. */
+static int isFindRingPart(int part)
+{
+    return part == UI_PART_FIND_FIELD || part == UI_PART_FIND_PREV ||
+           part == UI_PART_FIND_NEXT || part == UI_PART_FIND_CLOSE;
+}
+
+static void enterFindRingPart(int part)
+{
+    if (part == UI_PART_FIND_FIELD) {
+        g_focusOwner = FOCUS_FIND;
+        SetFocus(g_findEdit);
+    } else {
+        g_focusOwner = FOCUS_CHROME;
+        SetFocus(g_hwnd);
+    }
+
+    agbLog(AGB_LOG_SHELL, "find ring -> part %d", part);
+
+    invalidateChromeDirty(g_hwnd);
+    invalidateFindOverlay();
+}
+
 /* Mouse tracking is per window: crossing from the chrome onto the native EDIT
  * (or back out of it) posts WM_MOUSELEAVE to the window being left even though
  * the pointer never left the pill. Clearing the hover there and re-setting it
@@ -4338,7 +4389,7 @@ static LRESULT CALLBACK pillEditProc(HWND hwnd, UINT message, WPARAM wParam, LPA
         agbLog(AGB_LOG_SHELL, "find ime: end (hwnd=%p) text='%s'", (void*)hwnd, text);
 
         if (g_cur && hwnd == g_cur->findEdit)
-            findQueryChanged();
+            findPostUpdate();
     }
 
     if (win && (message == WM_MOUSEMOVE || message == WM_MOUSELEAVE)) {
@@ -4771,6 +4822,13 @@ static LRESULT CALLBACK shellProcInner(HWND hwnd, UINT message, WPARAM wParam, L
 
     case AGW_SHELL_STATUS:
         updateStatus();
+        return 0;
+
+    case AGW_FIND_UPDATE:
+        g_findUpdatePending = 0;
+
+        if (g_findVisible)
+            findQueryChanged();
         return 0;
 
     case AGW_SHELL_HANG_PROMPT: {
@@ -5300,7 +5358,7 @@ static LRESULT CALLBACK shellProcInner(HWND hwnd, UINT message, WPARAM wParam, L
                    text, g_findComposing);
 
             if (!g_findComposing)
-                findQueryChanged();
+                findPostUpdate();
             return 0;
         }
 
@@ -8585,6 +8643,24 @@ static int uiShotMain(void)
                     uiChromeHitTest(&chrome, chrome.findbar.close.rect.x + 2,
                                     chrome.findbar.close.rect.y + 2) == UI_PART_FIND_CLOSE);
 
+            /* Two rings that never meet: the chrome ring ends at the menu (the
+             * find buttons are no longer part of it), and the find ring cycles
+             * field -> prev -> next -> close -> field on its own. */
+            uiChromeFocusClear(&chrome);
+            uiCheck("focus-ring-separate",
+                    uiChromeFocusStepFrom(&chrome, UI_PART_MENU, 1) == UI_PART_NONE);
+
+            uiCheck("find-ring-forward",
+                    uiChromeFindFocusStepFrom(&chrome, UI_PART_FIND_FIELD, 1) ==
+                        UI_PART_FIND_PREV);
+            uiCheck("find-ring-next", uiChromeFindFocusStep(&chrome, 1) == UI_PART_FIND_NEXT);
+            uiCheck("find-ring-close", uiChromeFindFocusStep(&chrome, 1) == UI_PART_FIND_CLOSE);
+            uiCheck("find-ring-wraps",
+                    uiChromeFindFocusStep(&chrome, 1) == UI_PART_FIND_FIELD);
+            uiCheck("find-ring-backward",
+                    uiChromeFindFocusStep(&chrome, 0) == UI_PART_FIND_CLOSE);
+            uiChromeFocusClear(&chrome);
+
             /* The card is painted into its own window, not into the chrome. */
             {
                 BITMAPINFO cardInfo;
@@ -10954,6 +11030,18 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR commandLine, 
                 }
 
                 if (!fieldCtrl && msg.wParam == VK_TAB) {
+                    /* The find bar has its own ring: Tab from the query walks
+                     * field -> prev -> next -> close and wraps, never into the
+                     * toolbar ring. The address field keeps the chrome ring. */
+                    if (msg.hwnd == g_findEdit) {
+                        int next = uiChromeFindFocusStepFrom(CHROME, UI_PART_FIND_FIELD,
+                                                             fieldShift ? 0 : 1);
+
+                        if (next != UI_PART_NONE)
+                            enterFindRingPart(next);
+                        continue;
+                    }
+
                     /* Tab walks the chrome's tab stops (see uiChromeFocusStep);
                      * Shift+Tab goes straight back to the page. Just moving to
                      * the page here would make every toolbar button unreachable
@@ -10987,7 +11075,19 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR commandLine, 
                 int ringShift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
 
                 if (!ringCtrl && msg.wParam == VK_TAB) {
-                    int next = uiChromeFocusStep(CHROME, ringShift ? 0 : 1);
+                    int next;
+
+                    /* Two rings: while a find-bar button has the ring, Tab stays
+                     * inside the find bar and wraps around to the query field. */
+                    if (isFindRingPart(uiChromeFocusPart(CHROME))) {
+                        next = uiChromeFindFocusStep(CHROME, ringShift ? 0 : 1);
+
+                        if (next != UI_PART_NONE)
+                            enterFindRingPart(next);
+                        continue;
+                    }
+
+                    next = uiChromeFocusStep(CHROME, ringShift ? 0 : 1);
 
                     if (next == UI_PART_ADDRESS) {
                         /* The cycle passes through the native address field: it
