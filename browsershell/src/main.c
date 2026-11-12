@@ -4126,6 +4126,19 @@ static int dirtyHits(UiRect dirty, UiRect area)
            dirty.y < area.y + area.h && dirty.y + dirty.h > area.y;
 }
 
+/* The native fields paint their own background with the pill's current fill
+ * (WM_CTLCOLOREDIT), and child windows are not repainted by invalidating the
+ * parent. So every pill state change - hover on/off and focus on/off alike -
+ * has to invalidate the control, or the text keeps the old colour until
+ * something else happens to touch it. */
+static void syncFieldBackgrounds(void)
+{
+    if (g_address)
+        InvalidateRect(g_address, NULL, TRUE);
+    if (g_findEdit && IsWindowVisible(g_findEdit))
+        InvalidateRect(g_findEdit, NULL, TRUE);
+}
+
 static void invalidateChromeDirty(HWND hwnd)
 {
     UiRect dirty;
@@ -4141,12 +4154,9 @@ static void invalidateChromeDirty(HWND hwnd)
 
     InvalidateRect(hwnd, &rect, FALSE);
 
-    /* The native fields paint their own background with the pill's current
-     * fill (WM_CTLCOLOREDIT), so a hover change has to reach them as well. */
-    if (g_address && dirtyHits(dirty, CHROME->toolbar.address))
-        InvalidateRect(g_address, NULL, TRUE);
-    if (g_findEdit && dirtyHits(dirty, CHROME->findbar.field))
-        InvalidateRect(g_findEdit, NULL, TRUE);
+    if ((g_address && dirtyHits(dirty, CHROME->toolbar.address)) ||
+        (g_findEdit && dirtyHits(dirty, CHROME->findbar.field)))
+        syncFieldBackgrounds();
     if (g_cur->statusBar && dirtyHits(dirty, CHROME->statusbar.rect))
         InvalidateRect(g_cur->statusBar, NULL, FALSE);
 }
@@ -4404,6 +4414,9 @@ static void applyEditFonts(void)
         SendMessageW(g_address, WM_SETFONT, (WPARAM)CHROME->theme.hfont_address, TRUE);
     if (g_findEdit)
         SendMessageW(g_findEdit, WM_SETFONT, (WPARAM)CHROME->theme.hfont_ui, TRUE);
+
+    /* Theme / DPI change: the palette behind WM_CTLCOLOREDIT just changed. */
+    syncFieldBackgrounds();
 }
 
 /* Native window frame: keep WS_THICKFRAME | WS_CAPTION and let DWM draw the
@@ -4917,6 +4930,10 @@ static LRESULT CALLBACK shellProcInner(HWND hwnd, UINT message, WPARAM wParam, L
 
         uiChromeMouse(CHROME, &event);
         invalidateChromeDirty(hwnd);
+        /* Leaving the window clears the hover; the native field keeps its own
+         * background, so it needs the repaint even when the dirty region does
+         * not reach the pill. */
+        syncFieldBackgrounds();
         return 0;
     }
 
@@ -5141,6 +5158,9 @@ static LRESULT CALLBACK shellProcInner(HWND hwnd, UINT message, WPARAM wParam, L
                 uiChromeSetFocusField(CHROME, note == EN_SETFOCUS ? 2 : 0);
 
             InvalidateRect(hwnd, NULL, FALSE);
+            /* Focus changes the pill fill; the native field does not repaint
+             * with the parent, so it has to be invalidated explicitly. */
+            syncFieldBackgrounds();
             /* The find bar paints its own focus ring in the overlay window. */
             invalidateFindOverlay();
             return 0;
