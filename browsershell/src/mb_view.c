@@ -365,7 +365,12 @@ static void ensureMbInit(void)
         return;
 
     trace("mbInit begin");
-    mbEnableHighDPISupport();
+
+    /* High-DPI support is OFF on purpose: with it on, the engine derives the
+     * page's device scale from the process DPI and mbSetZoomFactor() then
+     * replaces that value, so page zoom and the display scale fight over one
+     * number. The adapter owns the page scale instead (zoom * display, see
+     * viewApplyEngineScale) and the engine is left at 100%. */
     mbInit(g_mbSettings);
     trace("mbInit done");
 
