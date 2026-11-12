@@ -1791,7 +1791,7 @@ static const char kSettingsHtml[] =
 "p.sub{color:var(--muted);margin:0 0 22px}"
 "section{border:1px solid var(--line);border-radius:10px;padding:14px 18px;"
 "margin:0 0 16px;max-width:720px;background:var(--card)}"
-"h2{font-size:13px;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);"
+"h2{font-size:14px;text-transform:uppercase;letter-spacing:.04em;color:var(--muted);"
 "margin:0 0 10px;font-weight:600}"
 ".row{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:8px 0}"
 ".row+.row{border-top:1px solid var(--line)}"
@@ -1818,7 +1818,7 @@ static const char kSettingsHtml[] =
 "button{font:inherit;padding:6px 14px;border-radius:6px;border:1px solid var(--line);"
 "background:var(--bg);color:var(--fg);cursor:pointer}"
 "button:hover{border-color:var(--accent);color:var(--accent)}"
-"code{font:13px Consolas,monospace;color:var(--muted);word-break:break-all}"
+"code{font:14px Consolas,monospace;color:var(--muted);word-break:break-all}"
 "</style></head><body>"
 "<h1>Settings</h1><p class=\"sub\">Changes apply immediately and are saved to the profile.</p>"
 
