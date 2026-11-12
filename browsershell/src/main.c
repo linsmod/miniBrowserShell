@@ -1483,6 +1483,8 @@ static void onPageMessage(AgaveWebView* view, const char* message, void* user)
         int total = 0;
 
         if (sscanf(message + 17, "%d/%d", &index, &total) == 2) {
+            agbLog(AGB_LOG_SHELL, "find count %d/%d (query='%s')", index, total,
+                   g_findQuery);
             g_findIndex = index;
             g_findTotal = total;
             syncChrome();
@@ -3907,6 +3909,7 @@ static void findQueryChanged(void)
         return;
 
     readControlText(g_findEdit, text, sizeof(text));
+    agbLog(AGB_LOG_SHELL, "find query: current='%s' last='%s'", text, g_findQuery);
 
     if (strcmp(text, g_findQuery) == 0)
         return;
@@ -3918,6 +3921,7 @@ static void findQueryChanged(void)
     g_findTotal = 0;
 
     /* An empty query clears the highlights in the page. */
+    agbLog(AGB_LOG_SHELL, "find search (typing) '%s'", text);
     agave_webview_search(tab->view, text, 1, 0);
 
     syncChrome();
@@ -4319,8 +4323,19 @@ static LRESULT CALLBACK pillEditProc(HWND hwnd, UINT message, WPARAM wParam, LPA
      * deferred until then. */
     if (message == WM_IME_STARTCOMPOSITION) {
         g_findComposing = 1;
+        agbLog(AGB_LOG_SHELL, "find ime: start (hwnd=%p)", (void*)hwnd);
+    } else if (message == WM_IME_COMPOSITION) {
+        char text[256];
+
+        readControlText(hwnd, text, sizeof(text));
+        agbLog(AGB_LOG_SHELL, "find ime: composition flags=0x%lx text='%s'",
+               (unsigned long)lParam, text);
     } else if (message == WM_IME_ENDCOMPOSITION) {
+        char text[256];
+
         g_findComposing = 0;
+        readControlText(hwnd, text, sizeof(text));
+        agbLog(AGB_LOG_SHELL, "find ime: end (hwnd=%p) text='%s'", (void*)hwnd, text);
 
         if (g_cur && hwnd == g_cur->findEdit)
             findQueryChanged();
@@ -5278,6 +5293,12 @@ static LRESULT CALLBACK shellProcInner(HWND hwnd, UINT message, WPARAM wParam, L
          * search behind it. An open IME composition is skipped - the final
          * commit is handled when the composition ends. */
         if (id == ID_FIND_EDIT && note == EN_CHANGE) {
+            char text[256];
+
+            readControlText(g_findEdit, text, sizeof(text));
+            agbLog(AGB_LOG_SHELL, "find edit: change text='%s' composing=%d",
+                   text, g_findComposing);
+
             if (!g_findComposing)
                 findQueryChanged();
             return 0;
