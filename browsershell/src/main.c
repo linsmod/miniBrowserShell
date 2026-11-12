@@ -5037,6 +5037,14 @@ static void rethemeShellWindow(ShellWindow* win)
     applyEditFonts();
     applyWindowFrame(win);
     layoutAll();
+
+    /* The chrome object was rebuilt from scratch, so every pixel on the window is
+     * stale - and layoutAll() alone does not invalidate anything. The menu path
+     * happened to repaint because the closing menu invalidated the window, which
+     * is why a theme change from the settings page (no menu to close) only
+     * applied partially. The find overlay and the status bubble are re-rendered
+     * by layoutAll() itself. */
+    InvalidateRect(win->hwnd, NULL, FALSE);
 }
 
 static void onChromeCommand(void* user, int id)
