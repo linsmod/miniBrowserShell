@@ -2737,7 +2737,8 @@ static void onContextMenu(AgaveWebView* view, int x, int y,
               UI_MENU_ICON_NONE, NULL);
 
     uiMenuAddSeparator(&menu);
-    uiMenuAdd(&menu, "注入 vConsole", NULL, 11, 0, UI_MENU_ICON_NONE, NULL);
+    uiMenuAdd(&menu, "Inspect page", "F12", 11, 0,
+              g_inspectOn ? UI_MENU_ICON_CHECK : UI_MENU_ICON_NONE, NULL);
 
     uiMenuTrim(&menu);
 
@@ -2827,7 +2828,7 @@ static void onContextMenu(AgaveWebView* view, int x, int y,
         }
         break;
     case 8: addBookmarkCurrent(); break;
-    case 11: injectVConsole(view); break;
+    case 11: toggleInspect(); break;
     case 20:
         /* Editing commands run through the engine's own context-menu path, so
          * they target the frame/element the menu was opened on and keep the
@@ -4070,7 +4071,8 @@ static void showMainMenu(void)
     uiMenuAdd(&root, "Find", "Ctrl+F", 6, 0, UI_MENU_ICON_NONE, NULL);
     uiMenuAdd(&root, "Reload", "F5", 7, 0, UI_MENU_ICON_NONE, NULL);
     uiMenuAddSeparator(&root);
-    uiMenuAdd(&root, "注入 vConsole", NULL, 8, 0, UI_MENU_ICON_NONE, NULL);
+    uiMenuAdd(&root, "Inspect page", "F12", 8, 0,
+              g_inspectOn ? UI_MENU_ICON_CHECK : UI_MENU_ICON_NONE, NULL);
     uiMenuAddSeparator(&root);
     /* The current choice rides on the row's right edge, like a shortcut: the
      * submenu itself is one click away and the check mark is only visible after
@@ -4137,7 +4139,7 @@ static void showMainMenu(void)
     case 5: navigateActive("about:blank", 1, "menu"); break;
     case 6: openFind(); break;
     case 7: reloadActive("menu"); break;
-    case 8: injectVConsole(g_tabs[g_activeTab].view); break;
+    case 8: toggleInspect(); break;
     /* Chrome opens both of these in a new tab; Ctrl+J does the same thing for
      * downloads, so the menu entry and the shortcut cannot drift apart. */
     case 10: navigateActive("minishell://downloads", 1, "menu downloads"); break;
@@ -7841,9 +7843,7 @@ static void shotBuildMenu(UiChrome* chrome, HDC dc, int width, int height)
     uiMenuAdd(&g_shotMenuRoot, "Find", "Ctrl+F", 6, 0, UI_MENU_ICON_NONE, NULL);
     uiMenuAdd(&g_shotMenuRoot, "Reload", "F5", 7, 0, UI_MENU_ICON_NONE, NULL);
     uiMenuAddSeparator(&g_shotMenuRoot);
-    uiMenuAdd(&g_shotMenuRoot, "注入 vConsole", NULL, 8, 0, UI_MENU_ICON_NONE, NULL);
-    uiMenuAdd(&g_shotMenuRoot, "注入 inspector.js", NULL, 9, 0,
-              UI_MENU_ICON_NONE, NULL);
+    uiMenuAdd(&g_shotMenuRoot, "Inspect page", "F12", 8, 0, UI_MENU_ICON_NONE, NULL);
     uiMenuAddSeparator(&g_shotMenuRoot);
 
     /* Theme submenu: exclusive rows with a check mark on the active one (the
@@ -11157,8 +11157,7 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR commandLine, 
                  * branch below swallows keys. */
                 if (msg.wParam == 'A' && shift) { toggleTabSearchPopup(); continue; }
                 if (msg.wParam == 'R' && !shift) { reloadActive("ctrl+r"); continue; }
-                /* Ctrl+Shift+I, like Chrome: the same host-side marker as F12
-                 * (the full inspector.js panel stays on the app menu). */
+                /* Ctrl+Shift+I, like Chrome: the same host-side marker as F12. */
                 if (msg.wParam == 'I' && shift && g_tabs[g_activeTab].used) {
                     toggleInspect();
                     continue;
@@ -11193,7 +11192,7 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR commandLine, 
 
             /* F12 toggles the host-side element marker (see ui_inspect.c): the
              * page only reports rects, the box is painted by the shell. The app
-             * menu still has "注入 inspector.js" for the full panel. */
+             * menu and the page context menu expose the same toggle. */
             if (msg.wParam == VK_F12 && g_tabs[g_activeTab].used) {
                 toggleInspect();
                 continue;
