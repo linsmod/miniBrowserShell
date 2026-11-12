@@ -171,6 +171,7 @@ static int          g_shellWindows; /* used entries in g_windows */
 static int  g_findIndex;
 static int  g_findTotal;
 static char g_findQuery[256];      /* text of the last searched query */
+static int  g_findComposing;       /* an IME composition owns the query field */
 #define g_closed      (g_cur->closed)
 #define g_closedCount (g_cur->closedCount)
 
@@ -3822,6 +3823,7 @@ static void toggleFind(void)
     g_findIndex = 0;
     g_findTotal = 0;
     g_findQuery[0] = 0;
+    g_findComposing = 0;
 
     if (!g_findVisible) {
         Tab* tab = &g_tabs[g_activeTab];
@@ -4308,6 +4310,21 @@ static LRESULT CALLBACK pillEditProc(HWND hwnd, UINT message, WPARAM wParam, LPA
     ShellWindow* win = windowForHwnd(hwnd);
 
     (void)wParam;
+
+    /* IME: while a composition is open the EDIT's text is the in-progress
+     * candidate (pinyin letters, then the picked word), and EN_CHANGE fires for
+     * every step. Searching then would run the query for "cheng", "chengdu" and
+     * finally "程度" - three page scans and a scroll per keystroke. The final
+     * commit always arrives before WM_IME_ENDCOMPOSITION, so the search is
+     * deferred until then. */
+    if (message == WM_IME_STARTCOMPOSITION) {
+        g_findComposing = 1;
+    } else if (message == WM_IME_ENDCOMPOSITION) {
+        g_findComposing = 0;
+
+        if (g_cur && hwnd == g_cur->findEdit)
+            findQueryChanged();
+    }
 
     if (win && (message == WM_MOUSEMOVE || message == WM_MOUSELEAVE)) {
         UiMouseEvent event;
@@ -5258,9 +5275,11 @@ static LRESULT CALLBACK shellProcInner(HWND hwnd, UINT message, WPARAM wParam, L
         }
 
         /* Search as you type: the query field is the only EDIT with a live
-         * search behind it. */
+         * search behind it. An open IME composition is skipped - the final
+         * commit is handled when the composition ends. */
         if (id == ID_FIND_EDIT && note == EN_CHANGE) {
-            findQueryChanged();
+            if (!g_findComposing)
+                findQueryChanged();
             return 0;
         }
 
