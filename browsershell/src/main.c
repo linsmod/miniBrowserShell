@@ -3745,6 +3745,20 @@ static void reloadActive(const char* source)
     agave_webview_reload(tab->view);
 }
 
+/* Ctrl+F5 / Ctrl+Shift+R. */
+static void reloadHardActive(const char* source)
+{
+    Tab* tab = &g_tabs[g_activeTab];
+
+    if (!tab->used || !tab->view) {
+        agbLog(AGB_LOG_SHELL, "reload hard (%s) ignored: no tab", source);
+        return;
+    }
+
+    agbLog(AGB_LOG_SHELL, "reload hard (%s) url=%s", source, tab->url);
+    agave_webview_reload_hard(tab->view);
+}
+
 static void backActive(const char* source)
 {
     Tab* tab = &g_tabs[g_activeTab];
@@ -11502,7 +11516,13 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR commandLine, 
                  * one-key round trip, and it must run before the popup-open
                  * branch below swallows keys. */
                 if (msg.wParam == 'A' && shift) { toggleTabSearchPopup(); continue; }
-                if (msg.wParam == 'R' && !shift) { reloadActive("ctrl+r"); continue; }
+                if (msg.wParam == 'R') {
+                    if (shift)
+                        reloadHardActive("ctrl+shift+r");
+                    else
+                        reloadActive("ctrl+r");
+                    continue;
+                }
                 /* Ctrl+Shift+I, like Chrome: the same host-side marker as F12. */
                 if (msg.wParam == 'I' && shift && g_tabs[g_activeTab].used) {
                     toggleInspect();
@@ -11532,7 +11552,10 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR commandLine, 
             }
 
             if (msg.wParam == VK_F5 && g_tabs[g_activeTab].used) {
-                reloadActive("F5");
+                if (GetKeyState(VK_CONTROL) & 0x8000)
+                    reloadHardActive("ctrl+f5");
+                else
+                    reloadActive("F5");
                 continue;
             }
 

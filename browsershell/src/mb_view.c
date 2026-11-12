@@ -88,6 +88,7 @@ struct MbView {
      * mbReload() needs one: called while the first navigation is still in
      * flight it drops that load and starts nothing. */
     int                  committed;
+int                  restoreCache;   /* a hard reload turned the caches off */
     /* Context menu: one request at a time (the control delivers bursts of
      * WM_RBUTTONUP), and none while our menu is on screen. The menu must open
      * even when the page cannot answer the element probe, so a timer opens it
@@ -682,6 +683,14 @@ static void MB_CALL_TYPE mbvOnLoadingFinish(mbWebView wv, void* param,
     trace("cb loadingFinish result=%d url=%s failed=%s", (int)result,
           url ? url : "", failedReason ? failedReason : "");
     postEvent(v, MBV_EV_PROGRESS, NULL, NULL, 100, 1);
+
+    /* A hard reload switched both caches off for its one request. */
+    if (v->restoreCache) {
+        v->restoreCache = 0;
+        mbSetMemoryCacheEnable(v->wv, TRUE);
+        mbSetDiskCacheEnabled(v->wv, TRUE);
+        trace("hard reload: caches restored");
+    }
 
     /* A user stop is not an error: only a real failure gets the red status. */
     if (result == MB_LOADING_FAILED) {
@@ -2025,12 +2034,34 @@ void agave_webview_forward(AgaveWebView* view)
     }
 }
 
+/* Reload policy: internal pages are synthetic documents (the HTML comes from
+ * loadDownloadsPage/loadSettingsPage, no engine document URL exists to reload),
+ * so "reload" regenerates them - the settings page then re-asks the shell for
+ * its values, which is exactly what a refresh should do. */
+static int reloadInternalPage(MbView* v)
+{
+    if (!_strnicmp(v->url, "minishell://settings", 20)) {
+        loadSettingsPage(v);
+        return 1;
+    }
+
+    if (!_strnicmp(v->url, "minishell://downloads", 21)) {
+        loadDownloadsPage(v);
+        return 1;
+    }
+
+    return 0;
+}
+
 void agave_webview_reload(AgaveWebView* view)
 {
     MbView* v = (MbView*)view;
     if (v && !v->destroying) {
         trace("reload (engine url=%s loading=%d progress=%d committed=%d)",
               v->url, v->loading, v->progress, v->committed);
+
+        if (reloadInternalPage(v))
+            return;
 
         /* mbReload() reloads the *committed* document.  Called while the first
          * navigation is still in flight it drops that load and starts nothing:
@@ -2050,6 +2081,38 @@ void agave_webview_reload(AgaveWebView* view)
         mbReload(v->wv);
         trace("reload: mbReload returned");
     }
+}
+
+/* Ctrl+F5. miniblink has no "reload ignoring cache" call; the only lever is the
+ * cache switches, so both caches are turned off for the duration of this one
+ * load and restored by mbvOnLoadingFinish(). */
+void agave_webview_reload_hard(AgaveWebView* view)
+{
+    MbView* v = (MbView*)view;
+
+    if (!v || v->destroying)
+        return;
+
+    trace("reload hard url=%s committed=%d", v->url, v->committed);
+
+    if (reloadInternalPage(v))
+        return;
+
+    v->restoreCache = 1;
+    mbSetMemoryCacheEnable(v->wv, FALSE);
+    mbSetDiskCacheEnabled(v->wv, FALSE);
+
+    if (!v->committed) {
+        char target[sizeof(v->url)];
+
+        copyStr(target, sizeof(target), v->url);
+        if (target[0])
+            agave_webview_navigate((AgaveWebView*)v, target);
+        return;
+    }
+
+    markLoading(v, 5);
+    mbReload(v->wv);
 }
 
 void agave_webview_stop(AgaveWebView* view)

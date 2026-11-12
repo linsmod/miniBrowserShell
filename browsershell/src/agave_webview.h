@@ -187,6 +187,10 @@ AGW_API void agave_webview_load_html(AgaveWebView* view, const char* html, const
 AGW_API void agave_webview_back(AgaveWebView* view);
 AGW_API void agave_webview_forward(AgaveWebView* view);
 AGW_API void agave_webview_reload(AgaveWebView* view);
+/* Ctrl+F5: reload with both engine caches switched off for the one load (the
+ * engine exposes no "reload ignoring cache" call). Internal minishell:// pages
+ * are simply regenerated. */
+AGW_API void agave_webview_reload_hard(AgaveWebView* view);
 /* Abort the running page script (does not need the command queue, so it works
  * while a script is stuck in a loop). Call agave_webview_reload() afterwards:
  * the aborted page's state is not trustworthy. */
