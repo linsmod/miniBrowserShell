@@ -1871,7 +1871,7 @@ static const char kSettingsHtml[] =
 "<div class=\"row\"><div>System scaling (from Windows)</div>"
 "<div><span id=\"scale\"></span> <code id=\"dpi\"></code></div></div>"
 "<div class=\"row\"><div>Page zoom</div>"
-"<div><code>Default zoom above, or Ctrl + / - / 0 (on top of the system scaling)</code></div></div></section>"
+"<div><code>Default zoom above, or Ctrl + / - / 0 (the page is not scaled by the display)</code></div></div></section>"
 
 "<section><h2>Data</h2>"
 "<div class=\"row\"><div>History: <span id=\"history\">0</span> entries</div>"
@@ -2170,26 +2170,20 @@ int agave_webview_editor_command(AgaveWebView* view, const char* command)
     return 1;
 }
 
-/* The engine's zoom knob is not "page zoom" alone: mbSetZoomFactor() sets the
- * control's device scale factor, i.e. window.devicePixelRatio becomes exactly
- * the value passed (measured: 125% display + factor 1.0 -> dpr 1.0). Feeding it
- * the bare page zoom therefore wipes the system scaling out - Ctrl+0 (zoom 100%)
- * made the page 25% *smaller* on a 125% monitor.
- *
- * System scaling and page zoom stay separate in this API; the engine only ever
- * sees their product. */
+/* Page zoom is a page property: the engine's zoom knob sets the control's device
+ * scale factor, i.e. window.devicePixelRatio becomes exactly the value passed.
+ * The shell's own chrome is what follows the Windows DPI (uiThemeScale) - the
+ * page is deliberately NOT multiplied by it, which is the behaviour this shell
+ * has always had (pageZoom 100% => dpr 1.0, pages keep their own scale). */
 static void viewApplyEngineScale(MbView* v)
 {
     float pageZoom;
-    float scale;
 
     if (!v || v->destroying || !v->wv)
         return;
 
     pageZoom = (float)(v->zoom > 0 ? v->zoom : 100) / 100.0f;
-    scale = (float)(v->deviceScale > 0 ? v->deviceScale : 100) / 100.0f;
-
-    mbSetZoomFactor(v->wv, pageZoom * scale);
+    mbSetZoomFactor(v->wv, pageZoom);
 }
 
 void agave_webview_set_zoom(AgaveWebView* view, int percent)
@@ -2212,10 +2206,9 @@ void agave_webview_set_device_scale(AgaveWebView* view, int percent)
     MbView* v = (MbView*)view;
     if (!v || percent <= 0)
         return;
-    /* System scaling: remembered for the shell (rect reporting, inspect) and
-     * folded into the engine's scale together with the page zoom. */
+    /* Informational: the shell scales its own chrome with this value and reports
+     * it to pages; the page zoom stays independent of it. */
     v->deviceScale = percent;
-    viewApplyEngineScale(v);
 }
 
 int agave_webview_device_scale(AgaveWebView* view)

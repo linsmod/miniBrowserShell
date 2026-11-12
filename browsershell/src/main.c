@@ -6408,16 +6408,16 @@ static int probeWriteBmp(const char* path, const unsigned char* bits,
     return ok;
 }
 
-/* CSS px -> client (device) px at the probe's zoom and device scale, rounding
- * half away from zero. The mirror buffer is device px, while
- * getBoundingClientRect() - the thing a --shot-rect value comes from - is CSS
- * px: at --zoom 125 a 100px box covers 125 mirror pixels, and on a 150% display
- * (device scale 150) it covers 187.5. */
-static int probeRectCssToClient(int value, int zoomPercent, int deviceScalePercent)
+/* CSS px -> device px at the probe's page zoom, rounding half away from zero.
+ * getBoundingClientRect() is CSS px, a --shot-rect value comes from it, and the
+ * mirror buffer is device px: at --zoom 125 a 100px box covers 125 buffer pixels.
+ * --device-scale describes the display; it does not enter this conversion (the
+ * page's devicePixelRatio is the page zoom). */
+static int probeRectCssToClient(int value, int zoomPercent)
 {
-    long v = (long)value * zoomPercent * deviceScalePercent;
+    long v = (long)value * zoomPercent;
 
-    return (int)((v >= 0 ? v + 5000 : v - 5000) / 10000);
+    return (int)((v >= 0 ? v + 50 : v - 50) / 100);
 }
 
 static int probeCapture(const char* path)
@@ -6456,10 +6456,10 @@ static int probeCapture(const char* path)
     if (g_probeShotRectSet) {
         int zoom = g_probeZoom > 0 ? g_probeZoom : 100;
         int deviceScale = g_probeDeviceScale > 0 ? g_probeDeviceScale : 100;
-        int x0 = probeRectCssToClient(g_probeShotRect[0], zoom, deviceScale);
-        int y0 = probeRectCssToClient(g_probeShotRect[1], zoom, deviceScale);
-        int x1 = probeRectCssToClient(g_probeShotRect[0] + g_probeShotRect[2], zoom, deviceScale);
-        int y1 = probeRectCssToClient(g_probeShotRect[1] + g_probeShotRect[3], zoom, deviceScale);
+        int x0 = probeRectCssToClient(g_probeShotRect[0], zoom);
+        int y0 = probeRectCssToClient(g_probeShotRect[1], zoom);
+        int x1 = probeRectCssToClient(g_probeShotRect[0] + g_probeShotRect[2], zoom);
+        int y1 = probeRectCssToClient(g_probeShotRect[1] + g_probeShotRect[3], zoom);
 
         rx = x0;
         ry = y0;
@@ -6470,7 +6470,7 @@ static int probeCapture(const char* path)
         if (ry < 0) { rh += ry; ry = 0; }
 
         if (rx >= w || ry >= h || rw <= 0 || rh <= 0) {
-            int total = zoom * deviceScale / 100;
+            int total = zoom;
 
             if (total < 1)
                 total = 1;

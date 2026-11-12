@@ -244,12 +244,11 @@ AGW_API int agave_webview_editor_command(AgaveWebView* view, const char* command
 AGW_API void agave_webview_set_zoom(AgaveWebView* view, int percent);
 AGW_API int  agave_webview_zoom(AgaveWebView* view);
 
-/* Display device scale: device pixels per CSS pixel in percent of 96 DPI (150
- * on a 150% Windows display = GetDpiForWindow() * 100 / 96). It multiplies with
- * the zoom above, exactly like a browser: window.devicePixelRatio is
- * zoom * device_scale / 100 and innerWidth is the view width divided by that.
- * Keeping the user's zoom apart from the DPI is what makes Ctrl+= on a 150%
- * monitor zoom the page without lying about devicePixelRatio. Default 100. */
+/* Display device scale: device pixels per CSS pixel in percent of 96 DPI (125 on
+ * a 125% Windows display = GetDpiForWindow() * 100 / 96). The shell scales its
+ * own chrome with it and reports it to pages/panels; it does NOT change the page
+ * zoom in this backend - the engine's zoom knob sets devicePixelRatio directly,
+ * and page zoom stays a page property independent of the display. Default 100. */
 AGW_API void agave_webview_set_device_scale(AgaveWebView* view, int percent);
 AGW_API int  agave_webview_device_scale(AgaveWebView* view);
 
