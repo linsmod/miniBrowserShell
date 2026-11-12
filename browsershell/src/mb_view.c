@@ -1858,6 +1858,12 @@ static const char kSettingsHtml[] =
 "<div class=\"row\"><div>Reopen the tabs from the last session</div>"
 "<input type=\"checkbox\" id=\"restore\"></div></section>"
 
+"<section><h2>Display</h2>"
+"<div class=\"row\"><div>System scaling (from Windows)</div>"
+"<div><span id=\"scale\"></span> <code id=\"dpi\"></code></div></div>"
+"<div class=\"row\"><div>Page zoom</div>"
+"<div><code>Default zoom above, or Ctrl + / - / 0</code></div></div></section>"
+
 "<section><h2>Data</h2>"
 "<div class=\"row\"><div>History: <span id=\"history\">0</span> entries</div>"
 "<button id=\"clearHistory\">Clear history</button></div>"
@@ -1903,6 +1909,8 @@ static const char kSettingsHtml[] =
 "else if(k==='history'){document.getElementById('history').textContent=v;}"
 "else if(k==='downloads'){document.getElementById('downloads').textContent=v;}"
 "else if(k==='profile'){document.getElementById('profile').textContent=v;}"
+"else if(k==='scale'){document.getElementById('scale').textContent=v;}"
+"else if(k==='dpi'){document.getElementById('dpi').textContent=v;}"
 "else if(k==='version'){document.getElementById('version').textContent=v;}"
 "}"
 "window.onAgaveMessage=function(m){"

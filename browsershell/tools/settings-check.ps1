@@ -31,6 +31,8 @@ probeExit('theme=' + theme + '|search=' + search + '|zoom=' + zoom +
           '|restore=' + document.getElementById('restore').checked +
           '|version=' + document.getElementById('version').textContent +
           '|downloads=' + document.getElementById('downloads').textContent +
+          '|scale=' + document.getElementById('scale').textContent +
+          '|dpi=' + document.getElementById('dpi').textContent +
           '|ddOpen=' + ddOpen + '|ddPick=' + ddPick + '|ddClosed=' + ddClosed);
 '@
 
@@ -65,6 +67,8 @@ if (-not $fields['downloads']) { $problems += 'downloads is empty (host never an
 if ($fields['ddOpen'] -ne 'true') { $problems += "dropdown did not open on the first click (ddOpen='$($fields['ddOpen'])')" }
 if ($fields['ddPick'] -ne 'bing') { $problems += "dropdown pick did not stick (ddPick='$($fields['ddPick'])')" }
 if ($fields['ddClosed'] -ne 'true') { $problems += 'dropdown stayed open after picking' }
+if ($fields['scale'] -notmatch '^[0-9]+%$') { $problems += "scale='$($fields['scale'])'" }
+if ($fields['dpi'] -notmatch '^[0-9]+ dpi$') { $problems += "dpi='$($fields['dpi'])'" }
 
 "settings page: $payload"
 "exit=$($out.exit) wall=$($out.seconds)s"

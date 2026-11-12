@@ -4247,6 +4247,30 @@ static void settingsSendAll(AgaveWebView* view)
     if (shellOps()->profile_root(NULL, text, sizeof(text)))
         settingsSend(view, "profile", text);
 
+    /* Read-only display facts: the Windows scaling the shell follows, and the
+     * raw DPI it came from. A probe has no shell window, so it reports the
+     * device scale it was started with. */
+    {
+        int scalePercent = 100;
+        unsigned dpi = 96;
+
+        if (g_cur) {
+            dpi = g_cur->chrome.theme.dpi;
+            scalePercent = deviceScalePercent(dpi);
+        } else if (view) {
+            scalePercent = agave_webview_device_scale(view);
+            if (scalePercent <= 0)
+                scalePercent = 100;
+            dpi = (unsigned)MulDiv(96, scalePercent, 100);
+        }
+
+        _snprintf(text, sizeof(text), "%d%%", scalePercent);
+        settingsSend(view, "scale", text);
+
+        _snprintf(text, sizeof(text), "%u dpi", dpi);
+        settingsSend(view, "dpi", text);
+    }
+
     settingsSend(view, "version", "miniblink 132, built " __DATE__);
     settingsSend(view, "done", "1");
 }
@@ -5605,6 +5629,12 @@ static LRESULT CALLBACK shellProcInner(HWND hwnd, UINT message, WPARAM wParam, L
          * rasterized larger, not stretched). */
         syncTabsDeviceScale();
 
+        /* The settings page shows the system scaling read-only: refresh it when
+         * the window lands on a monitor with a different DPI. */
+        if (g_tabs[g_activeTab].used && g_tabs[g_activeTab].view &&
+            !strncmp(g_tabs[g_activeTab].url, "minishell://settings", 20))
+            settingsSendAll(g_tabs[g_activeTab].view);
+
         if (suggested) {
             SetWindowPos(hwnd, NULL, suggested->left, suggested->top,
                          suggested->right - suggested->left,
@@ -5631,8 +5661,7 @@ static LRESULT CALLBACK shellProcInner(HWND hwnd, UINT message, WPARAM wParam, L
         int id = LOWORD(wParam);
         int note = HIWORD(wParam);
 
-        if (note == EN_SETFOCUS || note == EN_KILLFOCUS) {
-            HWND control = (HWND)lParam;
+        if (note == EN_SETFOCUS || note == EN_KILLFOCUS) {            HWND control = (HWND)lParam;
 
             if (control == g_address)
                 uiChromeSetFocusField(CHROME, note == EN_SETFOCUS ? 1 : 0);
