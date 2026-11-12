@@ -26,6 +26,13 @@
 #define INSPECT_CLASS       L"MiniShellInspectOverlay"
 #define INSPECT_BORDER_DIP  2
 
+/* Highlight colours, straight from the reference inspector.js (sky-400,
+ * #38BDF8): a 16% wash plus a 95% ring. The theme accent turned muddy on pages
+ * whose own design is blue, and the cyan reads as "this is the inspector" rather
+ * than "this is a selected control". */
+#define INSPECT_FILL_ARGB   0x2938BDF8u
+#define INSPECT_BORDER_ARGB 0xF238BDF8u
+
 typedef struct InspectSurface {
     HDC     dc;
     HBITMAP bitmap;
@@ -193,11 +200,17 @@ static int markBox(const UiInspect* insp, const RECT* area, RECT* box)
     if (box->right - box->left < 1 || box->bottom - box->top < 1)
         return 0;
 
-    /* The frame is inside the surface: a stroke centred on the edge would be
-     * clipped in half, and on a 2x2 element there is nothing left to see. */
+    /* The ring sits *outside* the element's box on every side (the reference
+     * inspector.js positions its outline div at left-2/top-2 with +4 size), so
+     * the element's own border stays visible under the highlight. A stroke that
+     * only grew right/bottom looked lopsided. */
+    box->left -= border;
+    box->top -= border;
     box->right += border;
     box->bottom += border;
 
+    if (box->left < area->left) box->left = area->left;
+    if (box->top < area->top) box->top = area->top;
     if (box->right > area->right) box->right = area->right;
     if (box->bottom > area->bottom) box->bottom = area->bottom;
 
@@ -239,11 +252,10 @@ static void inspectRender(UiInspect* insp)
 
     border = inspScale(insp, INSPECT_BORDER_DIP);
 
-    uiFillRect(&painter, uiRectMake(0, 0, w, h),
-               (insp->theme->accent & 0x00FFFFFFu) | 0x33000000u);
+    uiFillRect(&painter, uiRectMake(0, 0, w, h), INSPECT_FILL_ARGB);
     uiStrokeRoundRect(&painter, uiRectMake(border / 2, border / 2,
                                            w - border, h - border),
-                      0, insp->theme->accent, (float)border);
+                      0, INSPECT_BORDER_ARGB, (float)border);
 
     uiPainterEnd(&painter);
 
