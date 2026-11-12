@@ -4109,6 +4109,35 @@ static void findQueryChanged(void)
 /* One place that clamps, applies and logs the zoom: it used to be four copies of
  * the same three lines, invisible in the log even though zoom changes vw/vh and
  * every layout width bug report depends on it. */
+/* Chrome's zoom ladder. Stepping by a flat 25% made one Ctrl+plus jump straight
+ * from 100% to 125% (and down to 75%), which reads as "the factor is
+ * amplified"; the real browser takes small steps near 100% and larger ones at
+ * the ends. */
+static const int kZoomSteps[] = {
+    25, 33, 50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300, 400
+};
+
+static int zoomStep(int percent, int direction)
+{
+    int count = (int)(sizeof(kZoomSteps) / sizeof(kZoomSteps[0]));
+    int i;
+
+    if (direction > 0) {
+        for (i = 0; i < count; ++i) {
+            if (kZoomSteps[i] > percent)
+                return kZoomSteps[i];
+        }
+        return kZoomSteps[count - 1];
+    }
+
+    for (i = count - 1; i >= 0; --i) {
+        if (kZoomSteps[i] < percent)
+            return kZoomSteps[i];
+    }
+
+    return kZoomSteps[0];
+}
+
 static void setZoom(int percent, const char* source)
 {
     int before = g_zoom;
@@ -4403,8 +4432,8 @@ static void showMainMenu(void)
 
     switch (choice) {
     case 1: addBookmarkCurrent(); break;
-    case 2: setZoom(g_zoom + 25, "menu zoom in"); break;
-    case 3: setZoom(g_zoom - 25, "menu zoom out"); break;
+    case 2: setZoom(zoomStep(g_zoom, 1), "menu zoom in"); break;
+    case 3: setZoom(zoomStep(g_zoom, -1), "menu zoom out"); break;
     case 4: setZoom(100, "menu reset zoom"); break;
     case 5: navigateActive("about:blank", 1, "menu"); break;
     case 6: openFind(); break;
@@ -11452,11 +11481,11 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR commandLine, 
                     continue;
                 }
                 if (msg.wParam == VK_ADD || msg.wParam == 0xBB) {
-                    setZoom(g_zoom + 25, "ctrl+plus");
+                    setZoom(zoomStep(g_zoom, 1), "ctrl+plus");
                     continue;
                 }
                 if (msg.wParam == VK_SUBTRACT || msg.wParam == 0xBD) {
-                    setZoom(g_zoom - 25, "ctrl+minus");
+                    setZoom(zoomStep(g_zoom, -1), "ctrl+minus");
                     continue;
                 }
                 if (msg.wParam == '0') {

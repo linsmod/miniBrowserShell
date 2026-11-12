@@ -1818,8 +1818,10 @@ static const char kSettingsHtml[] =
 
 "<section><h2>Pages</h2>"
 "<div class=\"row\"><div>Default zoom for new tabs</div>"
-"<select id=\"zoom\"><option>75</option><option>90</option><option>100</option>"
-"<option>110</option><option>125</option><option>150</option></select></div>"
+"<select id=\"zoom\"><option>50</option><option>67</option><option>75</option>"
+"<option>80</option><option>90</option><option>100</option><option>110</option>"
+"<option>125</option><option>150</option><option>175</option><option>200</option>"
+"</select></div>"
 "<div class=\"row\"><div>Reopen the tabs from the last session</div>"
 "<input type=\"checkbox\" id=\"restore\"></div></section>"
 
