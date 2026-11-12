@@ -7797,6 +7797,14 @@ static int uiShotMain(void)
      * show a dead arrow next to a live one. */
     uiChromeSync(&chrome);
 
+    /* The real shell lays the chrome out at least once *before* the find bar is
+     * opened (startup, resizes). That hidden layout used to memset the whole
+     * find bar, disarming its buttons, so the offscreen shot (which only ever
+     * saw it visible) disagreed with the window. Lay it out closed first. */
+    chrome.model.find_visible = 0;
+    uiChromeLayout(&chrome, width, height);
+    chrome.model.find_visible = 1;
+
     uiChromeLayout(&chrome, width, height);
 
     memset(&info, 0, sizeof(info));
@@ -8486,6 +8494,21 @@ static int uiShotMain(void)
                     findEdit->y + findEdit->h <= card->y + card->h);
             uiCheck("find-overlay-below-toolbar",
                     card->y >= chrome.toolbar.rect.y + chrome.toolbar.rect.h);
+
+            /* The three buttons must still be armed after the hidden layout:
+             * they are the ones that disappeared from the real window. */
+            uiCheck("find-buttons-armed",
+                    chrome.findbar.prev.visible && chrome.findbar.next.visible &&
+                    chrome.findbar.close.visible &&
+                    chrome.findbar.prev.rect.w > 0 && chrome.findbar.next.rect.w > 0 &&
+                    chrome.findbar.close.rect.w > 0);
+            uiCheck("find-buttons-hit",
+                    uiChromeHitTest(&chrome, chrome.findbar.prev.rect.x + 2,
+                                    chrome.findbar.prev.rect.y + 2) == UI_PART_FIND_PREV &&
+                    uiChromeHitTest(&chrome, chrome.findbar.next.rect.x + 2,
+                                    chrome.findbar.next.rect.y + 2) == UI_PART_FIND_NEXT &&
+                    uiChromeHitTest(&chrome, chrome.findbar.close.rect.x + 2,
+                                    chrome.findbar.close.rect.y + 2) == UI_PART_FIND_CLOSE);
 
             /* The card is painted into its own window, not into the chrome. */
             {
@@ -9395,18 +9418,22 @@ static void findBarUpdateRegion(HWND bar)
 {
     RECT client;
     HRGN region;
-    int diameter;
+    int radius;
+    ShellWindow* win = windowForHwnd(bar);
 
     if (!bar || !GetClientRect(bar, &client))
         return;
 
-    diameter = client.bottom - client.top;
-
-    if (diameter < 2 || client.right <= 0)
+    if (client.right <= 0 || client.bottom <= 0)
         return;
 
+    /* The card is drawn with an 8 DIP radius; a stadium region (corner diameter
+     * = the full height) used to cut the ends into half-circles, and the right
+     * end is exactly where the counter and the three buttons live. */
+    radius = win ? uiThemeScale(&win->chrome.theme, 8) : 8;
+
     region = CreateRoundRectRgn(0, 0, client.right + 1, client.bottom + 1,
-                                diameter, diameter);
+                                radius * 2, radius * 2);
 
     if (region)
         SetWindowRgn(bar, region, TRUE);

@@ -312,7 +312,22 @@ void uiChromeLayout(UiChrome* chrome, int width, int height)
 
         chrome->find_edit = chrome->findbar.edit;
     } else {
-        memset(&chrome->findbar, 0, sizeof(chrome->findbar));
+        UiFindBar* bar = &chrome->findbar;
+
+        /* Only the geometry goes away. memset()ing the whole struct also wiped
+         * the buttons' id / icon / visible flags, and uiButtonInit() runs once
+         * at chrome init - so after the first layout with the bar closed, the
+         * prev / next / close buttons stayed "not visible" forever. That is why
+         * the three buttons never appeared in the real window while the
+         * offscreen shot (which never chained hide-then-show) drew them. */
+        bar->rect = uiRectMake(0, 0, 0, 0);
+        bar->field = uiRectMake(0, 0, 0, 0);
+        bar->edit = uiRectMake(0, 0, 0, 0);
+        bar->count = uiRectMake(0, 0, 0, 0);
+        bar->sep = uiRectMake(0, 0, 0, 0);
+        bar->prev.rect = uiRectMake(0, 0, 0, 0);
+        bar->next.rect = uiRectMake(0, 0, 0, 0);
+        bar->close.rect = uiRectMake(0, 0, 0, 0);
         chrome->find_edit = uiRectMake(0, 0, 0, 0);
     }
 
