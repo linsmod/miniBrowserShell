@@ -405,12 +405,13 @@ int crashPageRun(const char* report_path)
     }
 
     agave_webview_load_html(s_view, html, "minishell://crash");
-    agave_webview_set_focus(s_view);
     free(html);
 
     if (!hidden) {
         ShowWindow(s_wnd, SW_SHOW);
         UpdateWindow(s_wnd);
+        SetForegroundWindow(s_wnd);
+        agave_webview_set_focus(s_view);
     } else {
         /* Headless smoke test: create, load, then leave without a desktop. */
         SetTimer(s_wnd, 1, 3000, NULL);

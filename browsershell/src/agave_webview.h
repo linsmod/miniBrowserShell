@@ -162,7 +162,12 @@ typedef struct AgaveWebViewCallback {
 AGW_API AgaveWebView* agave_webview_create(void* parent, int x, int y, int width, int height,
                                            const AgaveWebViewCallback* callbacks, void* user);
 
-/* Destroys the control (stops its engine work, frees the buffer). */
+/* Destroys the control (stops its engine work, frees the buffer).
+ *
+ * If a load is still in flight the control is hidden and kept alive until the
+ * engine reports that load settled, then torn down: destroying it immediately
+ * makes the engine dispatch the network completion into the freed view and
+ * fault. The caller must not use the view after this call. */
 AGW_API void agave_webview_destroy(AgaveWebView* view);
 
 /* Creates a popup control as a child of the same host window as `from`, sized

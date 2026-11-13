@@ -53,7 +53,10 @@ enum {
     MBV_EV_MESSAGE,
     /* A popup the shell refused: destroyed later, never from inside the engine's
      * onCreateView callback (that crashed the next window.open). */
-    MBV_EV_DESTROY
+    MBV_EV_DESTROY,
+    /* A view whose host asked for destroy while a load was in flight: the load
+     * has settled and the engine can be torn down now (see agave_webview_destroy). */
+    MBV_EV_FINALIZE
 };
 
 typedef struct MbEvent {
@@ -100,6 +103,9 @@ int                  restoreCache;   /* a hard reload turned the caches off */
     int                  zoom;
     int                  visible;
     int                  destroying;
+    /* Destroy requested while the engine still has a request in flight: the
+     * control stays alive (hidden) until the load settles, then finalizes. */
+    int                  destroyPending;
     int                  deviceScale;
     /* Element inspector: host owns the mouse while this is set (see
      * agave_webview_set_input_capture). */
@@ -402,6 +408,10 @@ static void viewMarkDestroyed(MbView* v)
     v->destroying = 1;
 }
 
+/* Defined next to agave_webview_destroy(); runs on the UI thread once a retired
+ * view has no load left in flight. */
+static void viewFinishDestroy(MbView* v);
+
 /* ------------------------------------------------------------------------- */
 /* JS string quoting                                                         */
 /* ------------------------------------------------------------------------- */
@@ -543,7 +553,9 @@ static void postEvent(MbView* v, int type, const char* a, const char* b,
 {
     MbEvent* e;
 
-    if (!v || v->destroying || !v->hwnd)
+    /* FINALIZE is the one event a destroying view still needs: it is how the
+     * engine tells the host that the last in-flight load settled. */
+    if (!v || (v->destroying && type != MBV_EV_FINALIZE) || !v->hwnd)
         return;
 
     e = (MbEvent*)calloc(1, sizeof(*e));
@@ -574,7 +586,18 @@ static void postEvent(MbView* v, int type, const char* a, const char* b,
 }
 
 static void deliverEvent(MbView* v, MbEvent* e)
-{    if (!v || v->destroying || !e)
+{
+    if (!v || !e)
+        return;
+
+    /* The last load of a retired view settled: the engine is quiet, tear it
+     * down. This must run before the `destroying` gate below. */
+    if (e->type == MBV_EV_FINALIZE) {
+        viewFinishDestroy(v);
+        return;
+    }
+
+    if (v->destroying)
         return;
 
     switch (e->type) {
@@ -691,10 +714,19 @@ static void MB_CALL_TYPE mbvOnLoadingFinish(mbWebView wv, void* param,
     MbView* v = (MbView*)param;
     mbWebFrameHandle mainFrame = mbWebFrameGetMainFrame(wv);
 
-    if (!v || v->destroying)
+    if (!v)
         return;
     if (frameId && frameId != mainFrame)
         return;
+
+    if (v->destroying) {
+        /* A destroy was requested while this load was in flight. This is the
+         * point where the engine is done with the request: finalize on the UI
+         * thread instead of racing the completion. */
+        if (v->destroyPending)
+            postEvent(v, MBV_EV_FINALIZE, NULL, NULL, 0, 0);
+        return;
+    }
 
     trace("cb loadingFinish result=%d url=%s failed=%s", (int)result,
           url ? url : "", failedReason ? failedReason : "");
@@ -1425,7 +1457,7 @@ static LRESULT CALLBACK mbvViewProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     case MBV_CB_MESSAGE: {
         MbEvent* e = (MbEvent*)lp;
 
-        if (v && !v->destroying)
+        if (v && (!v->destroying || (e && e->type == MBV_EV_FINALIZE)))
             deliverEvent(v, e);
         if (e) {
             free(e->a);
@@ -1646,15 +1678,11 @@ AgaveWebView* agave_webview_create_popup(AgaveWebView* from, const char* url)
     return (AgaveWebView*)v;
 }
 
-void agave_webview_destroy(AgaveWebView* view)
+/* Engine teardown for a view the engine is done with. Runs on the UI thread. */
+static void viewFinishDestroy(MbView* v)
 {
-    MbView* v = (MbView*)view;
-
-    if (!v) {
+    if (!v)
         return;
-    }
-
-    viewMarkDestroyed(v);
 
     if (v->hwnd && v->originalProc) {
         SetWindowLongPtrW(v->hwnd, GWLP_WNDPROC, (LONG_PTR)v->originalProc);
@@ -1663,6 +1691,7 @@ void agave_webview_destroy(AgaveWebView* view)
     }
 
     if (v->wv) {
+        mbStopLoading(v->wv);
         mbDestroyWebView(v->wv);
         v->wv = NULL;
         v->hwnd = NULL;
@@ -1674,6 +1703,33 @@ void agave_webview_destroy(AgaveWebView* view)
     }
 
     viewRelease(v);
+}
+
+void agave_webview_destroy(AgaveWebView* view)
+{
+    MbView* v = (MbView*)view;
+
+    if (!v || v->destroyPending)
+        return;
+
+    viewMarkDestroyed(v);
+
+    /* Destroying a control while a request is still in flight is not safe in
+     * this engine: the network completion is dispatched later into a webview
+     * that no longer exists and faults inside mb132 (0x5e666f, reading [0xF0]) -
+     * reproduced whenever the nav guard rebuilt a view for a page that never
+     * committed and the request then failed. Hide the control instead and let
+     * the loading-finish callback finalize it once the engine is done. */
+    if (v->wv && v->loading) {
+        v->destroyPending = 1;
+        mbStopLoading(v->wv);
+        mbShowWindow(v->wv, FALSE);
+        if (v->backdrop)
+            ShowWindow(v->backdrop, SW_HIDE);
+        return;
+    }
+
+    viewFinishDestroy(v);
 }
 
 void agave_webview_set_user(AgaveWebView* view, void* user)

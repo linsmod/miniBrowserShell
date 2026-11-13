@@ -61,6 +61,11 @@ MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webv
   dpr 报 1.25 但着色 62px（1.5625），页面比窗口大、右/下被裁；f=1 还会把显示缩放丢掉。
   页面缩放因此改成注入 CSS `zoom`（`mb_view.c` 的 `viewApplyEngineScale`），dpr/innerWidth
   保持显示缩放，页面只放大一次。`tools/zoom-check.ps1` 锁的是这个行为。
+- **请求在途时 `mbDestroyWebView` 会崩**：销毁一个还在导航的控件后，网络完成回到已释放的
+  webview，引擎在 `mb132+0x5e666f` 读 `[0xF0]`（read 0）直接 AV；导航守卫"销毁并立即重建"
+  正好踩中（`tools/hangserver.ps1 -CloseAfterMs` 可 6 秒稳定复现）。适配层的
+  `agave_webview_destroy` 因此把在途控件隐藏、等 loading-finish 再真正销毁
+  （`destroyPending` + `MBV_EV_FINALIZE`），宿主拿到销毁后不能再碰 view。
 - **webview 上方不要放任何窗口**：哪怕是一个 1/255 alpha 的分层子窗口，只要盖在页面控件上，
   resize 后页面就不再重绘（停在旧帧）。
 - **`UpdateLayeredWindow` 的源 DC 里必须还选中着那块 DIB**：先把 bitmap `SelectObject` 还原再调用，
