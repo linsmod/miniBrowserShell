@@ -1245,6 +1245,9 @@ static HWND createStatusOverlay(ShellWindow* win);
 static void syncTabSearch(void);
 static void toggleTabSearchPopup(void);
 
+static void layoutAll(void);
+static int shellFrameBorder(HWND hwnd);
+
 static void layoutAll(void)
 {
     RECT client;
@@ -1257,6 +1260,13 @@ static void layoutAll(void)
     GetClientRect(g_hwnd, &client);
 
     syncChrome();
+
+    /* The client covers the whole window (DWM extended frame): keep the page
+     * out of the resize frame, otherwise the page control owns those pixels and
+     * dragging the left/right/bottom edge never reaches WM_NCHITTEST. Maximized
+     * windows cannot be resized, so the page uses the whole client there. */
+    CHROME->frame_border = IsZoomed(g_hwnd) ? 0 : shellFrameBorder(g_hwnd);
+
     uiChromeLayout(CHROME, client.right, client.bottom);
 
     edit = CHROME->address_edit;
@@ -7672,6 +7682,7 @@ static unsigned g_uiShotDpi = 96;
 static int  g_uiShotMenu;          /* --ui-menu: paint the sample app menu */
 static int  g_uiShotFocus;         /* --ui-focus: address pill owns focus */
 static int  g_uiShotSlide;         /* --ui-close-slide: close-slide geometry checks */
+static int  g_uiShotBorder;        /* --ui-border: resize frame around the page */
 static char g_uiShotFaviconPath[MAX_PATH_CHARS];  /* --ui-favicon: tab icon fixture */
 
 static void probePrint(const char* tag, const char* text)
@@ -9074,6 +9085,9 @@ static void probeUsage(void)
             "            asserts the first tab painted it. --ui-close-slide runs\n"
             "            the close-slide geometry checks (widths frozen, next tab\n"
             "            under the pointer, relayout after the pointer leaves).\n"
+            "            --ui-border <px> simulates the window's resize frame and\n"
+            "            asserts the page is inset on the left/right/bottom while\n"
+            "            the tab strip and toolbar stay full width.\n"
             "            Exit 0 only when every check passes (UI_SHOT PASS).\n"
             "  --shot-rect <x,y,w,h>  crop the capture to a CSS-pixel rect\n"
             "            (origin at the viewport's top-left, i.e. the values\n"
@@ -9460,6 +9474,7 @@ static int uiShotMain(void)
     callbacks.focus_field = shotFocus;
 
     uiChromeInit(&chrome, kind, g_uiShotDpi, 1, &callbacks);
+    chrome.frame_border = g_uiShotBorder;
     shotFillModel(&chrome.model);
 
     /* --ui-favicon: decode a real icon file and put it on the first tab. This
@@ -9511,6 +9526,19 @@ static int uiShotMain(void)
     chrome.model.find_visible = 1;
 
     uiChromeLayout(&chrome, width, height);
+
+    {
+        int content_top = chrome.theme.tabstrip_h + chrome.theme.toolbar_h;
+
+        uiCheck("frame-border-content",
+                chrome.content.x == g_uiShotBorder &&
+                chrome.content.w == width - g_uiShotBorder * 2 &&
+                chrome.content.y == content_top &&
+                chrome.content.h == height - content_top - g_uiShotBorder);
+        uiCheck("frame-border-chrome",
+                chrome.tabstrip.rect.x == 0 && chrome.tabstrip.rect.w == width &&
+                chrome.toolbar.rect.w == width);
+    }
 
     memset(&info, 0, sizeof(info));
     info.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
@@ -11068,6 +11096,14 @@ static void parseShellArgv(void)
             g_uiShotFocus = 1;
         } else if (!strcmp(argv[i], "--ui-close-slide")) {
             g_uiShotSlide = 1;
+        } else if (!strcmp(argv[i], "--ui-border") && i + 1 < argc) {
+            int border = atoi(argv[++i]);
+
+            if (border < 0)
+                border = 0;
+            if (border > 32)
+                border = 32;
+            g_uiShotBorder = border;
         } else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
             g_showUsage = 1;
         } else if (!strcmp(argv[i], "--eval") && i + 1 < argc) {
@@ -12144,6 +12180,7 @@ static ShellWindow* createShellWindow(const char* title)
 
     /* A first layout before any tab: the toolbar/address EMPTY state is what a
      * handoff-created window shows for a few milliseconds. */
+    win->chrome.frame_border = shellFrameBorder(win->hwnd);
     uiChromeLayout(&win->chrome, 1100, 760);
 
     agbLog(AGB_LOG_SHELL, "window ready hwnd=%p (windows=%d theme=%s dpi=%u)",

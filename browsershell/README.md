@@ -112,6 +112,7 @@ Cookie / localStorage 都在这个目录下，每个标签共享同一 profile�
   关闭弹窗后左上角按钮的 hover/pressed 状态会按当前鼠标位置重置
   （滚轮/拖动/PageUp/PageDown/Home/End）；切到别的窗口/应用自动关闭
 - 自绘右键菜单和应用菜单、书签/历史子菜单
+- 窗口四边/四角可拖动缩放：页面控件只占内容区，左/右/下留出窗口 resize 边框（最大化时页面铺满，不能缩放就不留）
 - 主题 `AGB_SHELL_THEME=light|dark|auto`、Per-Monitor V2 DPI
 - 设置页（应用菜单 → Settings）：主题、启动时（新标签页 / 继续上次 / 打开指定网页，可多行）、搜索引擎、
   默认缩放、清空历史、下载目录；启动时和搜索引擎是分开的两节（参考 Chrome）

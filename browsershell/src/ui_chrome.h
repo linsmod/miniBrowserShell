@@ -74,6 +74,12 @@ typedef struct UiChrome {
 
     int width;
     int height;
+    /* Device-pixel resize frame reserved around the page. The window's client
+     * area covers the whole window (DWM extended frame), so the page must not
+     * reach the edges or the page control would swallow the mouse and the
+     * shell's WM_NCHITTEST could never turn an edge into HTLEFT/HTBOTTOM/...
+     * Set by the shell from shellFrameBorder(); 0 in the offscreen renders. */
+    int frame_border;
     int offscreen;          /* no native EDITs: paint field text ourselves */
 
     void* parent_hwnd;
