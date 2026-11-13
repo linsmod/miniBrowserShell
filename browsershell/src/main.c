@@ -1628,21 +1628,38 @@ static void onPageMessage(AgaveWebView* view, const char* message, void* user)
 {
     Tab* tab = (Tab*)user;
 
-    (void)view;
-
-    if (!tab || !message)
-        return;
-    if (!tab->used || tab != &g_tabs[g_activeTab])
+    if (!tab || !message || !tab->used)
         return;
 
-    enterTabWindow(tab);
+    /* Read-only state requests belong to the tab that asked, not to the tab the
+     * user happens to be looking at. A restored minishell://settings page asks
+     * once while it loads; when it was a background tab on startup the old
+     * active-tab gate dropped that request and the page stayed blank. */
+    if (!strncmp(message, "__agb_settings_get__", 20)) {
+        ShellWindow* previous = g_cur;
+
+        if (tab != &g_tabs[g_activeTab])
+            agbLog(AGB_LOG_SHELL, "settings: background tab requested values (pid=%lu)",
+                   (unsigned long)GetCurrentProcessId());
+
+        enterTabWindow(tab);
+        settingsSendAll(view);
+        g_cur = previous;
+        return;
+    }
 
     /* minishell://newtab asks for the chrome theme when it boots (and when the
-     * tab is activated). */
+     * tab is activated). Read-only, so a background tab gets it too. */
     if (!strncmp(message, "__agb_newtab_get__", 18)) {
         newTabSendTheme(view);
         return;
     }
+
+    /* Everything below is an action on what the user is looking at. */
+    if (tab != &g_tabs[g_activeTab])
+        return;
+
+    enterTabWindow(tab);
 
     /* minishell://newtab: the search box submits its text, and the shell runs
      * it through normalizeUrl - default engine, attribution parameters, or a
@@ -1655,14 +1672,9 @@ static void onPageMessage(AgaveWebView* view, const char* message, void* user)
         return;
     }
 
-    /* minishell://settings: the page asks for the current values, pushes one
-     * "key=value" per change and runs a few actions. See loadSettingsPage() in
-     * mb_view.c for the page half. */
-    if (!strncmp(message, "__agb_settings_get__", 20)) {
-        settingsSendAll(view);
-        return;
-    }
-
+    /* minishell://settings: the page pushes one "key=value" per change and runs
+     * a few actions. The initial read was handled above, before the active-tab
+     * gate. See loadSettingsPage() in mb_view.c for the page half. */
     if (!strncmp(message, "__agb_settings_set__", 20)) {
         const char* pair = message + 20;
         const char* equals = strchr(pair, '=');
@@ -4377,6 +4389,10 @@ static void applyThemePref(int pref)
 /* settings page (minishell://settings)                                      */
 /* ------------------------------------------------------------------------- */
 
+/* Values that actually reached the page in the current settingsSendAll():
+ * agave_webview_post_message() drops them until the view has a document. */
+static int g_settingsDelivered;
+
 /* One "key=value" per message: the page then needs no JSON parser, and a path
  * (spaces, backslashes) survives as-is because '=' is the only separator. */
 static void settingsSend(AgaveWebView* view, const char* key, const char* value)
@@ -4396,13 +4412,15 @@ static void settingsSend(AgaveWebView* view, const char* key, const char* value)
             *p = ' ';
     }
 
-    agave_webview_post_message(view, message);
+    g_settingsDelivered += agave_webview_post_message(view, message);
 }
 
 static void settingsSendAll(AgaveWebView* view)
 {
     char text[MAX_PATH_CHARS];
     char number[32];
+
+    g_settingsDelivered = 0;
 
     settingsSend(view, "theme", themePrefName(g_themePref));
     settingsSend(view, "search", kEngineNames[g_prefs.search]);
@@ -4465,6 +4483,13 @@ static void settingsSendAll(AgaveWebView* view)
     settingsSend(view, "env", buildInfoLaunchEnv());
 
     settingsSend(view, "done", "1");
+
+    /* One line per answer: a restored background settings tab used to be
+     * silently dropped by the active-tab gate, so this makes the round trip
+     * observable from a headless run (and filters the shared log by pid).
+     * delivered==0 means the view had no document and nothing reached it. */
+    agbLog(AGB_LOG_SHELL, "settings: values sent delivered=%d (view=%p pid=%lu)",
+           g_settingsDelivered, (void*)view, (unsigned long)GetCurrentProcessId());
 }
 
 static void settingsApply(const char* key, const char* value)

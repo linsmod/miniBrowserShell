@@ -2687,7 +2687,7 @@ void agave_webview_set_input_capture(AgaveWebView* view, int enabled,
     agbLog(AGB_LOG_NAV, "input capture %s", enabled ? "on" : "off");
 }
 
-void agave_webview_post_message(AgaveWebView* view, const char* message)
+int agave_webview_post_message(AgaveWebView* view, const char* message)
 {
     MbView* v = (MbView*)view;
     char quoted[4096];
@@ -2696,13 +2696,14 @@ void agave_webview_post_message(AgaveWebView* view, const char* message)
     /* No document yet: there is no window.onAgaveMessage to receive it, and
      * running it before the first navigation can queue a job on a dying frame. */
     if (!v || !message || v->destroying || !v->docReady)
-        return;
+        return 0;
 
     jsQuote(message, quoted, sizeof(quoted));
     _snprintf(script, sizeof(script) - 1,
               "window.onAgaveMessage && window.onAgaveMessage(%s);", quoted);
     script[sizeof(script) - 1] = 0;
     agave_webview_eval(view, script);
+    return 1;
 }
 
 /* JS find: CSS Highlight API is not guaranteed across miniblink builds, so

@@ -330,8 +330,10 @@ AGW_API void agave_webview_set_input_capture(AgaveWebView* view, int enabled,
  * exercised without touching the user's keyboard. Pass 0 to clear. */
 AGW_API void agave_webview_set_probe_modifiers(unsigned modifiers);
 
-/* Host -> page: calls window.onAgaveMessage(text) in the page (if defined). */
-AGW_API void agave_webview_post_message(AgaveWebView* view, const char* message);
+/* Host -> page: calls window.onAgaveMessage(text) in the page (if defined).
+ * Returns 0 when the view has no document yet (the message is dropped, not
+ * queued) or the arguments are unusable; 1 when the call was run. */
+AGW_API int agave_webview_post_message(AgaveWebView* view, const char* message);
 
 /* 1 once the view has a document (document-ready) whose main frame can take
  * scripts/messages. Before that, eval-style calls must be deferred: queueing

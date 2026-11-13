@@ -45,6 +45,7 @@ MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webv
 | `tools/newtab-check.ps1` | 新标签页：默认引擎与百度 `tn=` / Google `client=` 归属参数、内嵌 logo 水印、顶部对齐、浅/深色背景（`AGB_NEWTAB_THEME=dark`） |
 | `tools/newtab-open-check.ps1` | 打开新标签页（handoff `--new-tab`，同 Ctrl+T）不能崩：隐藏壳 + 等 2 秒仍存活 |
 | `tools/tabsearch-check.ps1` | 标签搜索在加载中不被引擎的伪 `WM_ACTIVATE(WA_INACTIVE)` 关掉：隐藏壳 + `AGB_TEST_TABSEARCH=1`，5 秒后仍 open |
+| `tools/settings-restore-check.ps1` | 恢复会话时排在后台的 `minishell://settings` 也能拿到动态数据：临时 profile 写 `restore=1` + settings/文件页两行 session，隐藏壳断言后台请求被回答且 `delivered` 计数达到整组 |
 | `tools/gen-shell-version.ps1` | 构建前生成 `build-msvc/generated/shell_version.h`（tag 或 6 位 commit，脏树加 `-dirty`） |
 
 崩溃链路（报告 → 崩溃页）可以 headless 验证，不要开窗口：
@@ -87,6 +88,11 @@ MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webv
   `tools/layered-dib-check.ps1` 可以把这条规则单独复现：选中=成功，未选中=31。
 - **layered child 不可用**：本机对 `WS_CHILD + WS_EX_LAYERED` 调 `UpdateLayeredWindow` 返回 87，
   只能做成 owned popup（创建时带 `WS_EX_LAYERED` 的 popup 是正常的）。
+- **页面消息的 active-tab 闸门只该拦“动作”**：`onPageMessage()` 曾把所有非活动标签的消息直接丢掉。
+  恢复会话时后台的 `minishell://settings` 只在 `boot()` 里请求一次，于是永远空白、手动 reload 才回填。
+  现在只读请求（`__agb_settings_get__` / `__agb_newtab_get__`）按"请求它的标签"回答，动作类仍只认活动标签；
+  `settingsSendAll()` 把实际投递数打到 `settings: values sent delivered=N`（`agave_webview_post_message`
+  现在返回是否投递），`tools/settings-restore-check.ps1` 锁这个行为。
 - **`WH_MOUSE_LL` 钩子返回 1 会冻住鼠标**：低层鼠标钩子的返回值是"丢弃该事件"，对 `WM_MOUSEMOVE`
   返回非 0 等于把光标的移动也丢掉，鼠标就动不了了（本机实测锁死）。输入拦截必须走控件自己的消息路径
   —— `agave_webview_set_input_capture`（`mb_view.c` 的 `mbvViewProc`），光标照常移动、页面只是收不到消息。
