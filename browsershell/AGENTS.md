@@ -44,6 +44,7 @@ MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webv
 | `tools/crash-report-check.ps1` | 崩溃报告要带项目地址、`mb132_x64.dll` SHA-256、脱敏启动参数/环境，且不能泄露启动 URL 或路径 |
 | `tools/newtab-check.ps1` | 新标签页：默认引擎与百度 `tn=` / Google `client=` 归属参数、内嵌 logo 水印、顶部对齐、浅/深色背景（`AGB_NEWTAB_THEME=dark`） |
 | `tools/newtab-open-check.ps1` | 打开新标签页（handoff `--new-tab`，同 Ctrl+T）不能崩：隐藏壳 + 等 2 秒仍存活 |
+| `tools/tabsearch-check.ps1` | 标签搜索在加载中不被引擎的伪 `WM_ACTIVATE(WA_INACTIVE)` 关掉：隐藏壳 + `AGB_TEST_TABSEARCH=1`，5 秒后仍 open |
 | `tools/gen-shell-version.ps1` | 构建前生成 `build-msvc/generated/shell_version.h`（tag 或 6 位 commit，脏树加 `-dirty`） |
 
 崩溃链路（报告 → 崩溃页）可以 headless 验证，不要开窗口：

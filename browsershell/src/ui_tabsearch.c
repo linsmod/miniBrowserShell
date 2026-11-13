@@ -19,6 +19,7 @@
 #include <string.h>
 #include <stdlib.h>
 
+#include "agb_log.h"
 #include "ui_widgets.h"
 
 #define TS_WIDTH       360
@@ -86,6 +87,7 @@ typedef struct {
     int surface_w;
     int surface_h;
     int captured;
+    int open;             /* logical state; a test may keep the window hidden */
 } UiTabSearch;
 
 static UiTabSearch g_ts;
@@ -940,6 +942,10 @@ static LRESULT CALLBACK tsProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lP
 
     case WM_CAPTURECHANGED:
         if (g_ts.captured) {
+            HWND thief = GetCapture();
+
+            agbLog(AGB_LOG_SHELL, "tab search: capture lost to hwnd=%p (pid=%lu)",
+                   (void*)thief, (unsigned long)GetCurrentProcessId());
             g_ts.captured = 0;
             uiTabSearchClose();
         }
@@ -1145,6 +1151,7 @@ int uiTabSearchOpen(HWND owner, const UiTheme* theme,
     g_ts.width = tsScale(TS_WIDTH);
     g_ts.scroll_y = 0;
 
+    g_ts.open = 1;
     g_ts.origin.x = x;
     g_ts.origin.y = y;
 
@@ -1157,9 +1164,23 @@ int uiTabSearchOpen(HWND owner, const UiTheme* theme,
     if (g_ts.origin.y < work.top)
         g_ts.origin.y = work.top;
 
-    SetWindowPos(g_ts.hwnd, HWND_TOPMOST, g_ts.origin.x, g_ts.origin.y,
-                 g_ts.width + TS_MARGIN * 2, g_ts.height + TS_MARGIN * 2,
-                 SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    {
+        /* Headless runs must not put the layered popup on the real desktop;
+         * the popup is still logically open so key forwarding can be tested. */
+        const char* hidden = getenv("AGB_SHELL_HIDDEN");
+        UINT flags = SWP_NOACTIVATE;
+
+        if (!(hidden && hidden[0] && !(hidden[0] == '0' && hidden[1] == 0)))
+            flags |= SWP_SHOWWINDOW;
+
+        SetWindowPos(g_ts.hwnd, HWND_TOPMOST, g_ts.origin.x, g_ts.origin.y,
+                     g_ts.width + TS_MARGIN * 2, g_ts.height + TS_MARGIN * 2,
+                     flags);
+    }
+
+    agbLog(AGB_LOG_SHELL, "tab search: open (tabs=%d hidden=%d pid=%lu)",
+           g_ts.item_count, IsWindowVisible(g_ts.hwnd) ? 0 : 1,
+           (unsigned long)GetCurrentProcessId());
 
     g_ts.caret_on = 1;
     tsRender();
@@ -1219,9 +1240,13 @@ void uiTabSearchRefresh(const UiTabSearchItem* items, int count)
 
 void uiTabSearchClose(void)
 {
-    if (!g_ts.hwnd)
+    if (!g_ts.hwnd || !g_ts.open)
         return;
 
+    agbLog(AGB_LOG_SHELL, "tab search: close (pid=%lu)",
+           (unsigned long)GetCurrentProcessId());
+
+    g_ts.open = 0;
     KillTimer(g_ts.hwnd, 1);
 
     if (g_ts.captured) {
@@ -1234,7 +1259,7 @@ void uiTabSearchClose(void)
 
 int uiTabSearchIsOpen(void)
 {
-    return g_ts.hwnd && IsWindowVisible(g_ts.hwnd);
+    return g_ts.hwnd && g_ts.open;
 }
 
 void uiTabSearchKey(UINT message, WPARAM wParam, LPARAM lParam)

@@ -5537,11 +5537,32 @@ static LRESULT CALLBACK shellProcInner(HWND hwnd, UINT message, WPARAM wParam, L
     case WM_ACTIVATE:
         if (LOWORD(wParam) == WA_INACTIVE) {
             /* The tab-search popup is a topmost layered window and never takes
-             * focus; without this it stayed on screen after switching away. */
-            if (uiTabSearchIsOpen())
-                uiTabSearchClose();
+             * focus, so losing activation must close it. But the engine's own
+             * focus handling also sends a synthetic WA_INACTIVE while this
+             * window is still the active one (seen ~3 s into a page load);
+             * closing on that killed the popup for no user action. Only a real
+             * activation change counts. */
+            if (uiTabSearchIsOpen()) {
+                HWND active = GetActiveWindow();
+
+                if (active == hwnd) {
+                    agbLog(AGB_LOG_SHELL, "tab search: ignore synthetic WA_INACTIVE (still active, pid=%lu)",
+                           (unsigned long)GetCurrentProcessId());
+                } else {
+                    agbLog(AGB_LOG_SHELL, "tab search closed: shell deactivated (active=%p)",
+                           (void*)active);
+                    uiTabSearchClose();
+                }
+            }
         } else if (g_cur) {
             g_lastActive = g_cur;
+        }
+        break;
+
+    case WM_ACTIVATEAPP:
+        if (!wParam && uiTabSearchIsOpen()) {
+            agbLog(AGB_LOG_SHELL, "tab search closed: application deactivated");
+            uiTabSearchClose();
         }
         break;
 
@@ -5555,6 +5576,10 @@ static LRESULT CALLBACK shellProcInner(HWND hwnd, UINT message, WPARAM wParam, L
         break;
 
     case WM_SIZE:
+        /* A topmost popup would outlive the minimized shell. */
+        if (wParam == SIZE_MINIMIZED && uiTabSearchIsOpen())
+            uiTabSearchClose();
+
         /* Minimized: every view is hidden (Page Visibility + no layout/paint);
          * restored: only the active tab is. */
         g_minimized = (wParam == SIZE_MINIMIZED) ? 1 : 0;
@@ -11486,6 +11511,13 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR commandLine, 
     if (!g_shellHidden) {
         ShowWindow(g_hwnd, SW_SHOW);
         UpdateWindow(g_hwnd);
+    }
+
+    /* Headless reproduction hook: open the tab search before the first page
+     * has settled (AGB_SHELL_HIDDEN keeps the popup off the desktop). */
+    if (getenv("AGB_TEST_TABSEARCH")) {
+        agbLog(AGB_LOG_SHELL, "test: opening tab search at startup");
+        toggleTabSearchPopup();
     }
 
     agbLog(AGB_LOG_SHELL, "entering message loop");
