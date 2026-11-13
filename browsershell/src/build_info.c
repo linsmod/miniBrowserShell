@@ -2,6 +2,8 @@
  * summary, shared by the settings About section and the crash report. */
 #include "build_info.h"
 
+#include "shell_version.h"
+
 #include <windows.h>
 #include <winver.h>
 #include <wincrypt.h>
@@ -98,6 +100,11 @@ const char* buildInfoProjectUrl(void)
 const char* buildInfoShellBuild(void)
 {
     return __DATE__ " " __TIME__;
+}
+
+const char* buildInfoShellVersion(void)
+{
+    return SHELL_COMMIT_VERSION;
 }
 
 const char* buildInfoEngineVersion(void)

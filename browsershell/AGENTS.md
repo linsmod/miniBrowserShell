@@ -42,6 +42,8 @@ MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webv
 | `tools/navguard-check.ps1` | 导航守卫销毁在途控件（请求随后失败）不再把引擎带崩：隐藏壳 + 6 秒后关闭服务端，12 秒仍存活 |
 | `tools/repro-destroy-inflight.ps1` | 只依赖 `mb132_x64.dll` 的最小复现（给引擎作者）：在途请求时 `mbDestroyWebView` → 6 秒后服务端关闭即 AV |
 | `tools/crash-report-check.ps1` | 崩溃报告要带项目地址、`mb132_x64.dll` SHA-256、脱敏启动参数/环境，且不能泄露启动 URL 或路径 |
+| `tools/newtab-check.ps1` | 新标签页搜索：百度 `tn=` / Google `client=` 的 `minibrowsershell-<webcore6>-<shellver>` 归属参数与默认引擎 |
+| `tools/gen-shell-version.ps1` | 构建前生成 `build-msvc/generated/shell_version.h`（tag 或 6 位 commit，脏树加 `-dirty`） |
 
 崩溃链路（报告 → 崩溃页）可以 headless 验证，不要开窗口：
 `AGB_TEST_CRASH=1 AGB_CRASH_POPUP=0` 只写 `agb_crash.txt`；
@@ -91,6 +93,9 @@ Get-Process minishell -ErrorAction SilentlyContinue | Stop-Process -Force
 Start-Sleep -Milliseconds 500
 cmake --build build-msvc --config Release
 ```
+
+构建前会跑 `tools/gen-shell-version.ps1`（需要 `pwsh` 和 `git`），生成
+`build-msvc/generated/shell_version.h`；不在 git 仓库里时版本是 `unknown`。
 
 **只允许 `build-msvc`，禁止另建构建目录。** 用户测试的就是
 `build-msvc\Release\minishell.exe`；用 `build-check`、`build-x` 之类的目录编出来的 exe

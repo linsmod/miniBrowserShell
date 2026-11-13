@@ -30,7 +30,21 @@ target_compile_definitions(minishell PRIVATE
     _CRT_NONSTDC_NO_DEPRECATE
     ENABLE_MB=1)
 
-target_include_directories(minishell PRIVATE src)
+# shell_version.h is generated at build time (tag or short commit, +dirty) and
+# must exist before main.c compiles; the generated dir comes first so it wins
+# over any stale copy.
+set(SHELL_VERSION_HEADER "${CMAKE_CURRENT_BINARY_DIR}/generated/shell_version.h")
+file(MAKE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/generated")
+target_include_directories(minishell PRIVATE
+    "${CMAKE_CURRENT_BINARY_DIR}/generated"
+    src)
+
+add_custom_command(TARGET minishell PRE_BUILD
+    COMMAND pwsh -NoProfile -ExecutionPolicy Bypass
+            -File "${CMAKE_CURRENT_SOURCE_DIR}/tools/gen-shell-version.ps1"
+            -OutFile "${SHELL_VERSION_HEADER}"
+            -RepoRoot "${CMAKE_CURRENT_SOURCE_DIR}"
+    COMMENT "Generating shell_version.h (git tag/short hash, +dirty)")
 
 # Crash reports name frames as exe+0xRRRR; the map turns those into functions.
 target_link_options(minishell PRIVATE

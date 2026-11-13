@@ -306,8 +306,8 @@ size_t crashReportFormat(char* buf, size_t cap, EXCEPTION_RECORD* rec)
     app(buf, cap, &len, "MiniShell crash report\n");
     app(buf, cap, &len, "======================\n\n");
     app(buf, cap, &len, "Generated   %s (local)\n", when);
-    app(buf, cap, &len, "Shell       miniblink 132 shell, built %s %s, %s\n",
-        __DATE__, __TIME__,
+    app(buf, cap, &len, "Shell       miniblink 132 shell %s, built %s %s, %s\n",
+        buildInfoShellVersion(), __DATE__, __TIME__,
 #if defined(_WIN64)
         "x64"
 #else

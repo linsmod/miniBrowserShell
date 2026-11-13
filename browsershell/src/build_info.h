@@ -15,6 +15,10 @@ const char* buildInfoProjectUrl(void);
 /* "Nov 13 2026 11:16:35" (compile time) */
 const char* buildInfoShellBuild(void);
 
+/* Git tag on HEAD, or the first 6 chars of the commit, plus -dirty when the
+ * tree had changes. Generated at build time into shell_version.h. */
+const char* buildInfoShellVersion(void);
+
 /* File version of the loaded mb132_x64.dll, or "-". */
 const char* buildInfoEngineVersion(void);
 

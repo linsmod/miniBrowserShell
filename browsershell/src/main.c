@@ -36,6 +36,9 @@
 #define MAX_TABS        UI_MAX_TABS
 #define MAX_PATH_CHARS  1024
 
+/* The internal page a new tab starts on (Ctrl+T, +, --new-tab without a URL). */
+#define NEW_TAB_URL     "minishell://newtab"
+
 /* app.rc: the page half of the F12 element marker (assets/inspect.js). */
 #define IDR_INSPECT_JS  201
 
@@ -762,6 +765,10 @@ static void recordHistory(const char* url)
     if (!url || !url[0])
         return;
 
+    /* Internal pages (new tab, settings, downloads) are not browsing history. */
+    if (!_strnicmp(url, "minishell://", 12))
+        return;
+
     if (g_historyCount > 0 && !strcmp(g_history[g_historyCount - 1], url))
         return;
 
@@ -963,7 +970,13 @@ static void syncChrome(void)
         model->can_forward = agave_webview_can_forward(tab->view) ? 1 : 0;
         model->loading = tab->loading;
         model->progress = tab->progress;
-        _snprintf(model->address, sizeof(model->address), "%s", tab->url);
+
+        /* The new tab page is an empty omnibox, like every browser's: showing
+         * "minishell://newtab" there reads like a web address. */
+        if (!strcmp(tab->url, NEW_TAB_URL))
+            model->address[0] = 0;
+        else
+            _snprintf(model->address, sizeof(model->address), "%s", tab->url);
     }
 
     _snprintf(model->status, sizeof(model->status), "%s", g_status);
@@ -1594,6 +1607,10 @@ static void settingsSendAll(AgaveWebView* view);
 static void settingsApply(const char* key, const char* value);
 static void settingsAction(AgaveWebView* view, const char* action);
 
+/* Defined with the tab code; the new tab page's search box navigates through
+ * exactly the same path as the address bar. */
+static void navigateActive(const char* text, int newTab, const char* source);
+
 static void onPageMessage(AgaveWebView* view, const char* message, void* user)
 {
     Tab* tab = (Tab*)user;
@@ -1606,6 +1623,17 @@ static void onPageMessage(AgaveWebView* view, const char* message, void* user)
         return;
 
     enterTabWindow(tab);
+
+    /* minishell://newtab: the search box submits its text, and the shell runs
+     * it through normalizeUrl - default engine, attribution parameters, or a
+     * plain URL when the text looks like one. */
+    if (!strncmp(message, "__agb_newtab_search__", 21)) {
+        const char* query = message + 21;
+
+        if (query[0])
+            navigateActive(query, 0, "newtab");
+        return;
+    }
 
     /* minishell://settings: the page asks for the current values, pushes one
      * "key=value" per change and runs a few actions. See loadSettingsPage() in
@@ -3282,6 +3310,82 @@ static void fileUrlFromLocalPath(const char* input, char* out, size_t outSize)
     appendUrlEncoded(out, outSize, &written, full);
 }
 
+/* Percent-encodes UTF-8 bytes for a query component: RFC 3986 unreserved
+ * characters stay, everything else (spaces, '+', CJK, '/') is escaped. */
+static void urlEncodeComponent(const char* text, char* out, size_t outSize)
+{
+    static const char hex[] = "0123456789ABCDEF";
+    size_t o = 0;
+
+    if (!out || outSize == 0)
+        return;
+
+    for (; text && *text; ++text) {
+        unsigned char c = (unsigned char)*text;
+
+        if ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+            (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' || c == '~') {
+            if (o + 1 >= outSize)
+                break;
+            out[o++] = (char)c;
+        } else {
+            if (o + 3 >= outSize)
+                break;
+            out[o++] = '%';
+            out[o++] = hex[c >> 4];
+            out[o++] = hex[c & 15];
+        }
+    }
+
+    out[o] = 0;
+}
+
+/* Search URL for the default engine. Baidu and Google get an attribution value
+ * built from the first 6 chars of the engine DLL's SHA-256 and the shell's git
+ * version (tag or short commit, +dirty):
+ *   baidu  ...&tn=minibrowsershell-<hash6>-<version>
+ *   google ...&client=minibrowsershell-<hash6>-<version>
+ * so a search can be traced back to this build. */
+static void searchUrlFor(const char* query, char* out, size_t outSize)
+{
+    char encodedQuery[1024];
+    char value[192];
+    char encodedValue[640];
+    int engine = g_prefs.search;
+
+    if (engine < 0 || engine >= ENGINE_COUNT)
+        engine = 0;
+
+    urlEncodeComponent(query, encodedQuery, sizeof(encodedQuery));
+
+    if (engine != 0 && engine != 2) {
+        _snprintf(out, outSize, "%s%s", kEngineSearch[engine], encodedQuery);
+        out[outSize - 1] = 0;
+        return;
+    }
+
+    {
+        const char* hash = buildInfoEngineSha256();
+        char hash6[8];
+
+        if (!hash || !hash[0] || !strcmp(hash, "-")) {
+            strcpy(hash6, "unknown");
+        } else {
+            strncpy(hash6, hash, 6);
+            hash6[6] = 0;
+        }
+
+        _snprintf(value, sizeof(value), "minibrowsershell-%s-%s",
+                  hash6, buildInfoShellVersion());
+        value[sizeof(value) - 1] = 0;
+        urlEncodeComponent(value, encodedValue, sizeof(encodedValue));
+
+        _snprintf(out, outSize, "%s%s&%s=%s", kEngineSearch[engine], encodedQuery,
+                  engine == 0 ? "tn" : "client", encodedValue);
+        out[outSize - 1] = 0;
+    }
+}
+
 static void normalizeUrl(const char* input, char* out, size_t outSize)
 {
     const char* text = input;
@@ -3435,16 +3539,7 @@ static void normalizeUrl(const char* input, char* out, size_t outSize)
     }
 
     if (strchr(text, ' ') || !strchr(text, '.')) {
-        char encoded[512];
-        size_t i, o = 0;
-
-        for (i = 0; text[i] && o + 4 < sizeof(encoded); ++i)
-            encoded[o++] = (text[i] == ' ') ? '+' : text[i];
-
-        encoded[o] = 0;
-
-        _snprintf(out, outSize, "%s%s", kEngineSearch[g_prefs.search], encoded);
-        out[outSize - 1] = 0;
+        searchUrlFor(text, out, outSize);
         return;
     }
 
@@ -3722,6 +3817,11 @@ static void navigateActive(const char* text, int newTab, const char* source)
 {
     char url[MAX_PATH_CHARS];
 
+    /* Enter in an empty address bar is a no-op, not about:blank: on the new tab
+     * page (whose omnibox is empty) it must not replace the page. */
+    if (!text || !text[0])
+        return;
+
     /* The marker is bound to the document it was started on. */
     if (g_inspectOn)
         inspectStop("navigate");
@@ -3948,7 +4048,7 @@ static void showTabMenu(int index, int screenX, int screenY)
         int slot = freeSlotAfter(index);
 
         if (slot >= 0)
-            createTabIn(slot, "about:blank");
+            createTabIn(slot, NEW_TAB_URL);
         break;
     }
     case 51:
@@ -4319,7 +4419,8 @@ static void settingsSendAll(AgaveWebView* view)
         settingsSend(view, "dpi", text);
     }
 
-    _snprintf(text, sizeof(text), "miniblink 132, built %s", buildInfoShellBuild());
+    _snprintf(text, sizeof(text), "miniblink 132 %s, built %s",
+              buildInfoShellVersion(), buildInfoShellBuild());
     settingsSend(view, "version", text);
 
     /* Identification a bug report needs; the same facts go into the crash
@@ -4536,7 +4637,7 @@ static void showMainMenu(void)
     case 2: setZoom(zoomStep(g_zoom, 1), "menu zoom in"); break;
     case 3: setZoom(zoomStep(g_zoom, -1), "menu zoom out"); break;
     case 4: setZoom(100, "menu reset zoom"); break;
-    case 5: navigateActive("about:blank", 1, "menu"); break;
+    case 5: navigateActive(NEW_TAB_URL, 1, "menu"); break;
     case 6: openFind(); break;
     case 7: reloadActive("menu"); break;
     case 8: toggleInspect(); break;
@@ -4951,7 +5052,7 @@ static void handleShellCommand(int id, const char* source)
         break;
     }
 
-    case ID_NEWTAB: navigateActive("about:blank", 1, source); break;
+    case ID_NEWTAB: navigateActive(NEW_TAB_URL, 1, source); break;
     case ID_MENU:   showMainMenu(); break;
 
     case ID_FIND_NEXT:  doFind(1); break;
@@ -5165,7 +5266,7 @@ static void onChromeNewTab(void* user)
         return;
 
     g_cur = win;
-    navigateActive("about:blank", 1, "button");
+    navigateActive(NEW_TAB_URL, 1, "button");
 }
 
 static void onChromeTabSearch(void* user)
@@ -6595,6 +6696,17 @@ static void probeOnMessage(AgaveWebView* view, const char* message, void* user)
      * code the shell uses, so the page can be verified headlessly. */
     if (message && !strncmp(message, "__agb_settings_get__", 20)) {
         settingsSendAll(g_probeView);
+        return;
+    }
+
+    /* The new tab page's search box: print the URL the shell would navigate to
+     * (the same builder the address bar uses), so the attribution parameters
+     * are testable headlessly. */
+    if (message && !strncmp(message, "__agb_newtab_search__", 21)) {
+        char url[MAX_PATH_CHARS];
+
+        normalizeUrl(message + 21, url, sizeof(url));
+        probePrint("[search]", url);
         return;
     }
 
@@ -10825,7 +10937,7 @@ static LRESULT CALLBACK handoffProc(HWND hwnd, UINT message, WPARAM wParam, LPAR
         g_cur = target;
 
         if (request.op != 0) {
-            const char* url = request.url[0] ? request.url : "about:blank";
+            const char* url = request.url[0] ? request.url : NEW_TAB_URL;
 
             createTab(url);
         }
@@ -11532,7 +11644,7 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR commandLine, 
                 if (msg.wParam == 'T') {
                     /* ctrl+shift+T reopens the last closed tab, ctrl+T a new one. */
                     if (shift) reopenClosedTab();
-                    else navigateActive("about:blank", 1, "ctrl+t");
+                    else navigateActive(NEW_TAB_URL, 1, "ctrl+t");
                     continue;
                 }
                 if (msg.wParam == 'W' && !shift) { closeTab(g_activeTab); continue; }

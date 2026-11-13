@@ -2081,6 +2081,50 @@ static void loadSettingsPage(MbView* v)
     postEvent(v, MBV_EV_PROGRESS, NULL, NULL, 100, 1);
 }
 
+/* minishell://newtab: the page shown for a new tab instead of an empty
+ * about:blank. The box submits through the shell (agavePostMessage), so the
+ * default search engine and its attribution parameters stay host policy; see
+ * the __agb_newtab_search__ handler in main.c. */
+static const char kNewTabHtml[] =
+"<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
+"<meta name=\"color-scheme\" content=\"light dark\">"
+"<title>New tab</title><style>"
+":root{--bg:#fff;--fg:#202124;--muted:#5f6368;--line:#dfe1e5;--accent:#1a73e8;--card:#fff}"
+"@media (prefers-color-scheme:dark){:root{--bg:#202124;--fg:#e8eaed;--muted:#9aa0a6;"
+"--line:#3c4043;--accent:#8ab4f8;--card:#292a2d}}"
+"*{box-sizing:border-box}"
+"html,body{margin:0;height:100%}"
+"body{display:flex;flex-direction:column;align-items:center;justify-content:center;"
+"background:var(--bg);color:var(--fg);font:16px/1.5 'Segoe UI',system-ui,sans-serif;"
+"padding:24px}"
+"h1{font-size:42px;font-weight:600;letter-spacing:-.02em;margin:0 0 26px}"
+"form{width:min(620px,86vw)}"
+"input{width:100%;padding:13px 20px;border:1px solid var(--line);border-radius:26px;"
+"background:var(--card);color:var(--fg);font:inherit;font-size:17px;outline:none}"
+"input:focus{border-color:var(--accent);box-shadow:0 1px 6px rgba(32,33,36,.2)}"
+"p.hint{margin:16px 0 0;color:var(--muted);font-size:13px}"
+"</style></head><body>"
+"<h1>MiniShell</h1>"
+"<form id=\"f\"><input id=\"q\" type=\"search\" autocomplete=\"off\" spellcheck=\"false\" "
+"placeholder=\"Search the web or enter an address\" autofocus></form>"
+"<p class=\"hint\">Search uses the default engine from Settings.</p>"
+"<script>"
+"function submitQuery(){"
+"var q=document.getElementById('q');var v=q.value.replace(/^\\s+|\\s+$/g,'');"
+"if(!v)return;"
+"try{agavePostMessage('__agb_newtab_search__'+v);}catch(e){}"
+"}"
+"document.getElementById('f').addEventListener('submit',function(e){"
+"e.preventDefault();submitQuery();});"
+"setTimeout(function(){try{document.getElementById('q').focus();}catch(e){}},0);"
+"</script></body></html>";
+
+static void loadNewTabPage(MbView* v)
+{
+    mbLoadHtmlWithBaseUrl(v->wv, kNewTabHtml, "minishell://newtab");
+    postEvent(v, MBV_EV_PROGRESS, NULL, NULL, 100, 1);
+}
+
 static void markLoading(MbView* v, int percent)
 {
     if (!v || v->destroying)
@@ -2101,6 +2145,11 @@ void agave_webview_navigate(AgaveWebView* view, const char* url)
     copyStr(v->url, sizeof(v->url), url);
     markLoading(v, 5);
     trace("navigate url=%s", url);
+
+    if (!_strnicmp(url, "minishell://newtab", 18)) {
+        loadNewTabPage(v);
+        return;
+    }
 
     if (!_strnicmp(url, "minishell://downloads", 21)) {
         loadDownloadsPage(v);
@@ -2162,6 +2211,11 @@ void agave_webview_forward(AgaveWebView* view)
  * its values, which is exactly what a refresh should do. */
 static int reloadInternalPage(MbView* v)
 {
+    if (!_strnicmp(v->url, "minishell://newtab", 18)) {
+        loadNewTabPage(v);
+        return 1;
+    }
+
     if (!_strnicmp(v->url, "minishell://settings", 20)) {
         loadSettingsPage(v);
         return 1;

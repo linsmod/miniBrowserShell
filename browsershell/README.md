@@ -80,6 +80,7 @@ Cookie / localStorage 都在这个目录下，每个标签共享同一 profile�
 | 修改 / 替换返回内容 | `mbOnLoadUrlBegin` 里 `mbNetHookRequest(job)`；`mbOnLoadUrlEnd` 里 `mbNetSetData` / `mbNetSetMIMEType` / `mbNetSetResponseStatusCode`（当前外壳未启用，示例见 `tools/net_hook_demo.c`） |
 | 直接拦截并伪造响应 | `mbOnLoadUrlBegin` 里 `mbNetSetData` + `mbNetSetMIMEType` 后返回 `TRUE`（mb 不再发请求） |
 | 页面截图（探针） | `mbGetLockedViewDC` + `StretchBlt`（隐藏窗口也能取到 backing store） |
+| `minishell://newtab` | 新标签页（搜索框）；提交走 `__agb_newtab_search__`，由外壳的默认搜索引擎和归属参数决定 |
 | `minishell://downloads` | 适配层自己生成下载列表 HTML |
 | `minishell://settings` | 适配层生成的设置页；控件通过 `agavePostMessage('__agb_settings_*__')` 与外壳双向通信 |
 
@@ -88,8 +89,9 @@ Cookie / localStorage 都在这个目录下，每个标签共享同一 profile�
 
 ## 已实现的交互
 
-- 标签：新建 / 关闭 / 中键关闭 / 按下即切换 / 会话恢复
-- 地址栏：Enter 导航、Ctrl+L 全选；无点号按搜索词走百度
+- 标签：新建 / 关闭 / 中键关闭 / 按下即切换 / 会话恢复；新标签页是 `minishell://newtab`
+  （居中搜索框，地址栏显示为空），不是空白 about:blank
+- 地址栏：Enter 导航、Ctrl+L 全选；无点号按搜索词走默认搜索引擎
 - 快捷键：Ctrl+T/W/R/L/F/J/D、Ctrl+Tab、Ctrl+Shift+A、Ctrl+Shift+T、Ctrl+= / Ctrl+- / Ctrl+0、F5、F12、Alt+←/→、Esc
 - 缩放：Ctrl+= / Ctrl+- / Ctrl+0、Ctrl+滚轮、应用菜单和设置页；按标签记录，导航后重新套用（CSS `zoom`）
 - 查找栏：浮层、Enter/Shift+Enter、Esc 关闭
@@ -101,6 +103,20 @@ Cookie / localStorage 都在这个目录下，每个标签共享同一 profile�
 - 下载：写入系统 Downloads（或 `--download-dir` 之外的默认目录），状态气泡显示进度/结果
 - 单实例 / `--new-tab` / `--new-window` 交接到已运行窗口
 - 崩溃：隐私无关的 `agb_crash.txt` + 独立的崩溃页（完整诊断、一键复制报告）
+
+## 新标签页与搜索归属
+
+新标签页 `minishell://newtab` 的搜索框提交后由外壳按默认搜索引擎解析（和地址栏同一条
+`normalizeUrl` 路径）：带点的文本按地址导航，其余按搜索词处理。百度和 Google 的结果 URL
+会带本构建的归属参数，方便从搜索结果反查版本：
+
+- Baidu：`...&tn=minibrowsershell-<webcore6>-<shellver>`
+- Google：`...&client=minibrowsershell-<webcore6>-<shellver>`（不是 `tn`）
+
+`<webcore6>` 是 `mb132_x64.dll` 的 SHA-256 前 6 位；`<shellver>` 由
+`tools/gen-shell-version.ps1` 在每次构建前写进 `build-msvc/generated/shell_version.h`：
+HEAD 有 tag 用 tag，否则用 commit 前 6 位，工作树有改动再追加 `-dirty`。设置页 About 和
+崩溃报告显示同一个版本。
 
 ## 引擎启动竞态（导航守卫）
 
