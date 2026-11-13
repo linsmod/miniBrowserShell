@@ -271,6 +271,14 @@ AGW_API int agave_webview_fetch(AgaveWebView* view, const char* url,
 AGW_API void agave_webview_set_zoom(AgaveWebView* view, int percent);
 AGW_API int  agave_webview_zoom(AgaveWebView* view);
 
+/* Host layout hook: the page covers the whole content area, but the top-level
+ * window's resize border must stay reachable. With `pixels` > 0 (device px) the
+ * control answers WM_NCHITTEST with HTTRANSPARENT for that strip along its
+ * left/right/bottom edge, so the parent window gets the hit test and the OS
+ * starts the resize - full-bleed rendering, no reserved frame. 0 disables it
+ * (maximized windows, full screen). */
+AGW_API void agave_webview_set_resize_edge(AgaveWebView* view, int pixels);
+
 /* Display device scale: device pixels per CSS pixel in percent of 96 DPI (125 on
  * a 125% Windows display = GetDpiForWindow() * 100 / 96). It describes the
  * environment only (settings page, logs); the engine's high-DPI support paints

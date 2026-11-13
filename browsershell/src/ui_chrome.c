@@ -254,19 +254,12 @@ void uiChromeLayout(UiChrome* chrome, int width, int height)
 
     /* The page keeps its full height: the status bar is a bubble that floats
      * over the bottom-left corner and only exists while it has something to say
-     * (see the statusbar block below).
-     *
-     * The left/right/bottom edges are reserved for the window's resize frame:
-     * the page is a child control, so any pixel of the client it covers sends
-     * the mouse to the control instead of the shell's WM_NCHITTEST. Everything
-     * that lives inside the page (find bar, status bubble, page view) derives
-     * from this rect, so they all stay inside the frame. */
-    chrome->content = uiRectMake(chrome->frame_border, content_top,
-                                 width - chrome->frame_border * 2,
-                                 height - content_top - chrome->frame_border);
+     * (see the statusbar block below). The page also covers the whole width and
+     * the bottom edge; the window's resize strip over it is handed back to the
+     * shell by the control's WM_NCHITTEST (HTTRANSPARENT), so no rendering area
+     * is given up for the frame. */
+    chrome->content = uiRectMake(0, content_top, width, height - content_top);
 
-    if (chrome->content.w < 0)
-        chrome->content.w = 0;
     if (chrome->content.h < 0)
         chrome->content.h = 0;
 

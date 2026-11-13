@@ -1,13 +1,14 @@
-# tools/window-frame-check.ps1 - the page must not cover the window's resize frame.
+# tools/window-frame-check.ps1 - the page is full-bleed, and the window edges
+# still resize.
 #
 # The shell window is a DWM-extended-frame window: its client area covers the
 # whole window, so the resize border is an area inside the client that the
-# shell's WM_NCHITTEST turns into HTLEFT/HTBOTTOM/... If the page control
-# reached the client edges it would own those pixels and dragging the edges
-# over the content would do nothing. The chrome reserves the frame around the
-# page; this checks the geometry and the hit test.
+# shell's WM_NCHITTEST turns into HTLEFT/HTBOTTOM/... The page is a child
+# control and covers that strip too; the control reports it as HTTRANSPARENT so
+# the hit test falls through to the shell, which starts the resize. Rendering
+# gives up no pixels.
 #
-# The window is started with AGB_SHELL_HIDDEN, so nothing appears on screen.
+# The window starts hidden (AGB_SHELL_HIDDEN), so nothing appears on screen.
 #
 #   pwsh -File tools\window-frame-check.ps1
 param(
@@ -21,7 +22,6 @@ if (-not (Test-Path $exe)) { throw "minishell.exe not found: $exe" }
 
 Add-Type @'
 using System;
-using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
 
@@ -33,7 +33,6 @@ public static class Win {
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hwnd, out RECT rect);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] public static extern int GetClassNameW(IntPtr hwnd, StringBuilder name, int count);
     [DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr hwnd, uint msg, IntPtr wParam, IntPtr lParam);
-    [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr hwnd);
     [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left, Top, Right, Bottom; }
 
     public static IntPtr FindShell(uint pid) {
@@ -62,6 +61,12 @@ public static class Win {
         }, IntPtr.Zero);
         return best;
     }
+
+    /* WM_NCHITTEST = 0x0084, lParam = screen x/y. */
+    public static int HitTest(IntPtr hwnd, int x, int y) {
+        IntPtr lp = (IntPtr)((y << 16) | (x & 0xFFFF));
+        return (int)SendMessage(hwnd, 0x0084, IntPtr.Zero, lp);
+    }
 }
 '@
 
@@ -79,7 +84,6 @@ $childId = $shell.Id
 $problems = @()
 
 try {
-    # Wait for the window (created before the message loop, so this is quick).
     $deadline = (Get-Date).AddMilliseconds($Timeout)
     $hwnd = [IntPtr]::Zero
     while ((Get-Date) -lt $deadline) {
@@ -94,7 +98,6 @@ try {
         exit 1
     }
 
-    # Give the first tab a moment to create its view and take a layout.
     Start-Sleep -Milliseconds 1200
 
     $wr = New-Object Win+RECT
@@ -107,31 +110,38 @@ try {
     if ($view -eq [IntPtr]::Zero -or -not [Win]::GetWindowRect($view, [ref]$vr)) {
         $problems += 'no page child window'
     } else {
-        # The page must be inside the frame: left/right/bottom gaps, and a top
-        # gap for the tab strip + toolbar.
-        if ($vr.Left -le $wr.Left) { $problems += "page starts at the window's left edge ($($vr.Left))" }
-        if ($vr.Right -ge $wr.Right) { $problems += "page reaches the window's right edge ($($vr.Right))" }
-        if ($vr.Bottom -ge $wr.Bottom) { $problems += "page reaches the window's bottom edge ($($vr.Bottom))" }
+        # Full-bleed: the page reaches the window's left/right/bottom (allow the
+        # 1-2 px DWM frame), and starts below the tab strip + toolbar.
+        if ($vr.Left -gt $wr.Left + 2) { $problems += "page does not reach the left edge (inset $($vr.Left - $wr.Left))" }
+        if ($vr.Right -lt $wr.Right - 2) { $problems += "page does not reach the right edge (inset $($wr.Right - $vr.Right))" }
+        if ($vr.Bottom -lt $wr.Bottom - 2) { $problems += "page does not reach the bottom edge (inset $($wr.Bottom - $vr.Bottom))" }
         if ($vr.Top -le $wr.Top) { $problems += "page starts at the window's top edge ($($vr.Top))" }
-        "page inset: left=$($vr.Left - $wr.Left) right=$($wr.Right - $vr.Right) bottom=$($wr.Bottom - $vr.Bottom) top=$($vr.Top - $wr.Top)"
+        "page rect: left=$($vr.Left) top=$($vr.Top) right=$($vr.Right) bottom=$($vr.Bottom) window=$($wr.Left),$($wr.Top),$($wr.Right),$($wr.Bottom)"
     }
 
-    # WM_NCHITTEST = 0x0084, lParam = screen x/y. The constants are the values
-    # DefWindowProc expects: HTLEFT=10, HTBOTTOM=15, HTCLIENT=1.
-    function HitTest([int]$x, [int]$y) {
-        $lp = [IntPtr](($y -shl 16) -bor ($x -band 0xFFFF))
-        return [int][Win]::SendMessage($hwnd, 0x0084, [IntPtr]::Zero, $lp)
+    $midX = $wr.Left + [int]($width / 2)
+    $midY = $wr.Top + [int]($height / 2)
+
+    # The window's own hit test turns the edges into resize borders.
+    $leftHit = [Win]::HitTest($hwnd, $wr.Left + 2, $midY)
+    $bottomHit = [Win]::HitTest($hwnd, $midX, $wr.Bottom - 2)
+    $clientHit = [Win]::HitTest($hwnd, $midX, $midY)
+    if ($leftHit -ne 10) { $problems += "window left edge hit test returned $leftHit instead of HTLEFT" }
+    if ($bottomHit -ne 15) { $problems += "window bottom edge hit test returned $bottomHit instead of HTBOTTOM" }
+    if ($clientHit -ne 1) { $problems += "window content hit test returned $clientHit instead of HTCLIENT" }
+    "window hit test: left=$leftHit bottom=$bottomHit content=$clientHit"
+
+    # The page covers those pixels, so it must hand them back (HTTRANSPARENT)
+    # and keep HTCLIENT in its middle.
+    if ($view -ne [IntPtr]::Zero) {
+        $viewLeft = [Win]::HitTest($view, $wr.Left + 2, $midY)
+        $viewBottom = [Win]::HitTest($view, $midX, $wr.Bottom - 2)
+        $viewClient = [Win]::HitTest($view, $midX, $midY)
+        if ($viewLeft -ne -1) { $problems += "page left edge returned $viewLeft instead of HTTRANSPARENT" }
+        if ($viewBottom -ne -1) { $problems += "page bottom edge returned $viewBottom instead of HTTRANSPARENT" }
+        if ($viewClient -ne 1) { $problems += "page content returned $viewClient instead of HTCLIENT" }
+        "page hit test: left=$viewLeft bottom=$viewBottom content=$viewClient"
     }
-
-    $leftHit = HitTest ($wr.Left + 2) ($wr.Top + [int]($height / 2))
-    $bottomHit = HitTest ($wr.Left + [int]($width / 2)) ($wr.Bottom - 2)
-    $clientHit = HitTest ($wr.Left + [int]($width / 2)) ($wr.Top + [int]($height / 2))
-
-    if ($leftHit -ne 10) { $problems += "left edge hit test returned $leftHit instead of HTLEFT" }
-    if ($bottomHit -ne 15) { $problems += "bottom edge hit test returned $bottomHit instead of HTBOTTOM" }
-    if ($clientHit -ne 1) { $problems += "content hit test returned $clientHit instead of HTCLIENT" }
-
-    "hit test: left=$leftHit bottom=$bottomHit content=$clientHit"
 } finally {
     if (-not $shell.HasExited) { Stop-Process -Id $shell.Id -Force -ErrorAction SilentlyContinue }
     Remove-Item Env:AGB_SHELL_HIDDEN -ErrorAction SilentlyContinue
@@ -143,5 +153,5 @@ if ($problems.Count -gt 0) {
     exit 1
 }
 
-'PASS: the page stays inside the resize frame and the window edges hit-test as resize borders'
+'PASS: the page is full-bleed and the window resize edges win the hit test'
 exit 0

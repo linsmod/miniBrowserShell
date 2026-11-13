@@ -133,6 +133,9 @@ int                  restoreCache;   /* a hard reload turned the caches off */
     int                  ctxX, ctxY;
     int                  zoom;
     int                  visible;
+    /* Device pixels at the parent window's left/right/bottom edge that resize
+     * the window instead of reaching the page (0 = off). */
+    int                  resizeEdge;
     int                  destroying;
     /* Destroy requested while the engine still has a request in flight: the
      * control stays alive (hidden) until the load settles, then finalizes. */
@@ -1749,6 +1752,57 @@ static LRESULT CALLBACK mbvViewProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     }
 
     switch (msg) {
+    /* The page covers the whole content area (including the window's resize
+     * border). Report the border strip as HTTRANSPARENT so the hit test falls
+     * through to the parent window, whose WM_NCHITTEST turns it into
+     * HTLEFT/HTBOTTOM/... and starts the resize. Rendering keeps every pixel. */
+    case WM_NCHITTEST:
+        if (v && v->resizeEdge > 0 && v->parent) {
+            POINT point = { GET_X_LPARAM(lp), GET_Y_LPARAM(lp) };
+            RECT shell;
+
+            if (GetWindowRect(v->parent, &shell)) {
+                int x = point.x - shell.left;
+                int y = point.y - shell.top;
+                int w = shell.right - shell.left;
+                int h = shell.bottom - shell.top;
+
+                if (x < v->resizeEdge || x >= w - v->resizeEdge ||
+                    y >= h - v->resizeEdge)
+                    return HTTRANSPARENT;
+            }
+        }
+        break;
+
+    /* Same strip: show the resize cursor. The engine would otherwise keep its
+     * page cursor (arrow/text) over an area that resizes the window. */
+    case WM_SETCURSOR:
+        if (v && v->resizeEdge > 0 && v->parent) {
+            POINT point;
+            RECT shell;
+
+            if (GetCursorPos(&point) && GetWindowRect(v->parent, &shell)) {
+                int x = point.x - shell.left;
+                int y = point.y - shell.top;
+                int w = shell.right - shell.left;
+                int h = shell.bottom - shell.top;
+                int left = x < v->resizeEdge;
+                int right = x >= w - v->resizeEdge;
+                int bottom = y >= h - v->resizeEdge;
+
+                if (left || right || bottom) {
+                    LPCWSTR id = bottom
+                                     ? (left ? IDC_SIZENESW
+                                             : right ? IDC_SIZENWSE : IDC_SIZENS)
+                                     : IDC_SIZEWE;
+
+                    SetCursor(LoadCursorW(NULL, id));
+                    return TRUE;
+                }
+            }
+        }
+        break;
+
     /* The engine swallows right-clicks when its own menu is disabled: no
      * WM_CONTEXTMENU ever reaches the host (verified on real input). The
      * control window itself still receives every WM_RBUTTONUP, and this
@@ -2840,6 +2894,16 @@ static void viewApplyEngineScale(MbView* v)
     mbRunJs(v->wv, frame, script, FALSE, NULL, NULL, NULL);
 }
 
+
+void agave_webview_set_resize_edge(AgaveWebView* view, int pixels)
+{
+    MbView* v = (MbView*)view;
+
+    if (!v)
+        return;
+
+    v->resizeEdge = pixels > 0 ? pixels : 0;
+}
 
 void agave_webview_set_zoom(AgaveWebView* view, int percent)
 {

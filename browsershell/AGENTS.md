@@ -50,7 +50,7 @@ MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webv
 | `tools/startup-check.ps1` | 启动时设置：新标签页 / 继续上次会话 / 打开指定网页（多个），以及旧 `restore=`/`home=` 的迁移：每个 case 独立 profile，隐藏壳断言 `tab create` 的 URL |
 | `tools/last-tab-close-check.ps1` | 关掉最后一个标签会关闭窗口（单窗口即退出）：隐藏壳 + `AGB_TEST_CLOSE_TAB_MS`，断言进程 0 退出、日志有 close 路径、无崩溃报告 |
 | `tools/tab-close-slide-check.ps1` | 点 X 关闭后宽度冻结、右侧左移（下一个 X 落到鼠标下），指针离开 tab 条后重新压缩：`AGB_TEST_CLOSE_CHIP` 合成鼠标位置，`--ui-shot --ui-close-slide` 锁几何 |
-| `tools/window-frame-check.ps1` | 页面控件不能盖住窗口左/右/下的 resize 边框：隐藏壳里取窗口和页面子窗口矩形，断言页面有内缩，并 `WM_NCHITTEST` 断言左/下边缘返回 HTLEFT/HTBOTTOM、内容区返回 HTCLIENT |
+| `tools/window-frame-check.ps1` | 页面铺满内容区（不牺牲渲染区域）但窗口边缘仍可缩放：隐藏壳里断言页面子窗口到达窗口左/右/下边缘，页面 `WM_NCHITTEST` 在边缘返回 `HTTRANSPARENT`、内容区 `HTCLIENT`，外壳边缘返回 `HTLEFT/HTBOTTOM` |
 | `tools/gen-shell-version.ps1` | 构建前生成 `build-msvc/generated/shell_version.h`（tag 或 6 位 commit，脏树加 `-dirty`） |
 
 崩溃链路（报告 → 崩溃页）可以 headless 验证，不要开窗口：
