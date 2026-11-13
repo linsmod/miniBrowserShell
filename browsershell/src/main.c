@@ -4312,19 +4312,38 @@ static void settingsApply(const char* key, const char* value)
         }
     } else if (!strcmp(key, "zoom")) {
         int zoom = atoi(value);
+        int w, t;
 
         if (zoom < 25)
             zoom = 25;
         if (zoom > 400)
             zoom = 400;
 
-        agbLog(AGB_LOG_SHELL, "settings: zoom -> %d", zoom);
+        agbLog(AGB_LOG_SHELL, "settings: zoom -> %d (all windows/tabs)", zoom);
         g_prefs.zoom = zoom;
         prefsSave();
 
-        /* Apply to the tab the user is looking at, so the choice is visible. */
-        if (g_cur)
-            setZoom(zoom, "settings");
+        /* A default that only affects future tabs is invisible: apply it to every
+         * tab that already exists, in every window, right away. */
+        for (w = 0; w < MAX_SHELL_WINDOWS; ++w) {
+            ShellWindow* win = &g_windows[w];
+
+            if (!win->used)
+                continue;
+
+            win->zoom = zoom;
+
+            for (t = 0; t < MAX_TABS; ++t) {
+                if (win->tabs[t].used && win->tabs[t].view)
+                    agave_webview_set_zoom(win->tabs[t].view, zoom);
+            }
+        }
+
+        if (g_cur) {
+            syncChrome();
+            updateStatus();
+            InvalidateRect(g_cur->hwnd, NULL, FALSE);
+        }
     } else if (!strcmp(key, "restore")) {
         g_prefs.restore = atoi(value) ? 1 : 0;
         agbLog(AGB_LOG_SHELL, "settings: restore -> %d", g_prefs.restore);
@@ -7221,8 +7240,12 @@ static int probeRun(const char* url)
     /* Match the GUI: createTabIn() applies the tab's page zoom before the first
      * navigation, so a probe without --zoom must still pin 100% instead of
      * leaving the engine's default (which follows the process DPI). */
-    agave_webview_set_zoom(g_probeView, g_probeZoom > 0 ? g_probeZoom : 100);
-    g_probeZoomDone = g_probeZoom > 0;
+    /* Only a real --zoom touches the engine; with no flag the view keeps the
+     * engine's high-DPI default, like the GUI (see viewApplyEngineScale). */
+    if (g_probeZoom > 0) {
+        agave_webview_set_zoom(g_probeView, g_probeZoom);
+        g_probeZoomDone = 1;
+    }
 
     /* AGB_PROBE_SHOW=1 shows the window; debugging aid for load paths that
      * behave differently when the control is never visible. A hidden window

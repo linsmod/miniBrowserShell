@@ -369,12 +369,7 @@ static void ensureMbInit(void)
         return;
 
     trace("mbInit begin");
-
-    /* High-DPI support is OFF on purpose: with it on, the engine derives the
-     * page's device scale from the process DPI and mbSetZoomFactor() then
-     * replaces that value, so page zoom and the display scale fight over one
-     * number. The adapter owns the page scale instead (zoom * display, see
-     * viewApplyEngineScale) and the engine is left at 100%. */
+    mbEnableHighDPISupport();
     mbInit(g_mbSettings);
     trace("mbInit done");
 
@@ -890,7 +885,8 @@ static mbWebView MB_CALL_TYPE mbvOnCreateView(mbWebView wv, void* param,
     copyStr(popup->downloadDir, sizeof(popup->downloadDir), from->downloadDir);
     copyStr(popup->profileDir, sizeof(popup->profileDir), from->profileDir);
     popup->zoom = from->zoom;
-    mbSetZoomFactor(popup->wv, (float)popup->zoom / 100.0f);
+    /* No mbSetZoomFactor here either: see viewApplyEngineScale - a factor below 1
+     * drops the display scale, a factor above 1 paints the page oversized. */
 
     if (from->cb.on_new_window) {
         if (!from->cb.on_new_window((AgaveWebView*)from, (AgaveWebView*)popup,
@@ -1882,7 +1878,7 @@ static const char kSettingsHtml[] =
 "</div></div></div></section>"
 
 "<section><h2>Pages</h2>"
-"<div class=\"row\"><div>Default zoom for new tabs</div>"
+"<div class=\"row\"><div>Page zoom (all tabs)</div>"
 "<div class=\"dd\" id=\"zoomDD\" data-value=\"100\">"
 "<button type=\"button\" class=\"dd-btn\">100</button>"
 "<div class=\"dd-menu\">"
@@ -2204,26 +2200,23 @@ int agave_webview_editor_command(AgaveWebView* view, const char* command)
     return 1;
 }
 
-/* Page scale = page zoom * display scale, the complete browser model:
- * devicePixelRatio is device pixels per CSS pixel, so a 100% page on a 125%
- * display is 1.25 and 125% page zoom on that display is 1.5625.
+/* Page scale is NOT driven through the engine's zoom in this build.
  *
- * The engine's zoom knob sets that device scale factor directly (the value
- * passed becomes window.devicePixelRatio), so the adapter feeds it the product;
- * the shell's own chrome scales with the same DPI through uiThemeScale. */
+ * Measured with a 40 CSS px marker on a 125% display (window 1100x800):
+ *   no call            -> dpr 1.25, marker 50 px, right edge intact
+ *   mbSetZoomFactor(1.0)   -> dpr 1.0,  marker 40 px (display scale dropped)
+ *   mbSetZoomFactor(1.25)  -> dpr 1.25, marker 62 px (1.5625 painted!)
+ * A factor above 1 is applied twice to painting (layout uses factor, the surface
+ * uses factor*factor), so the page is drawn larger than the window and the right
+ * and bottom are cut off. The only consistent state is letting the engine's
+ * high-DPI support paint at the display scale, so no zoom call is made. The
+ * requested zoom is still recorded for the UI/model. */
 static void viewApplyEngineScale(MbView* v)
 {
-    float pageZoom;
-    float displayScale;
-
     if (!v || v->destroying || !v->wv)
         return;
-
-    pageZoom = (float)(v->zoom > 0 ? v->zoom : 100) / 100.0f;
-    displayScale = (float)(v->deviceScale > 0 ? v->deviceScale : 100) / 100.0f;
-
-    mbSetZoomFactor(v->wv, pageZoom * displayScale);
 }
+
 
 void agave_webview_set_zoom(AgaveWebView* view, int percent)
 {
@@ -2231,6 +2224,12 @@ void agave_webview_set_zoom(AgaveWebView* view, int percent)
 
     if (!v || percent <= 0)
         return;
+
+    if (percent != v->zoom)
+        agbLog(AGB_LOG_NAV, "page zoom %d%% -> %d%% (recorded only: the engine's "
+               "zoom paints the page factor*factor in this build)",
+               v->zoom, percent);
+
     v->zoom = percent;
     viewApplyEngineScale(v);
 }
@@ -2305,7 +2304,22 @@ int agave_webview_paint_to(AgaveWebView* view, void* hdc, int width, int height)
         return 0;
 
     memset(&rc, 0, sizeof(rc));
-    mbGetSize(v->wv, &rc);
+
+    /* Copy the client rect 1:1: the mirror buffer is the size of the control, so
+     * the capture shows exactly what the window shows. */
+    {
+        RECT client;
+
+        if (v->hwnd && GetClientRect(v->hwnd, &client) &&
+            client.right > 0 && client.bottom > 0) {
+            rc.w = (int)(client.right - client.left);
+            rc.h = (int)(client.bottom - client.top);
+        }
+    }
+
+    if (rc.w <= 0 || rc.h <= 0)
+        mbGetSize(v->wv, &rc);
+
     if (rc.w <= 0 || rc.h <= 0) {
         rc.w = (int)(v->rect.right - v->rect.left);
         rc.h = (int)(v->rect.bottom - v->rect.top);
