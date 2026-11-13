@@ -10580,7 +10580,7 @@ static int uiShotMain(void)
          * remaining tab's chip returns to the pointer and the next close walks
          * left. */
         {
-            int cursor_x, before_w, w2_before;
+            int cursor_x, before_w;
 
             shotFillModel(&chrome.model);
             uiChromeLayout(&chrome, 900, 300);
@@ -10597,20 +10597,22 @@ static int uiShotMain(void)
                     chrome.tabstrip.close[3].x == cursor_x &&
                     chrome.tabstrip.tab[0].w > before_w);
 
-            w2_before = chrome.tabstrip.tab[2].w;
-
             uiChromeBeginCloseSlide(&chrome, 3, -1);
             chrome.model.tabs[3].used = 0;
             uiChromeLayout(&chrome, 900, 300);
 
-            /* Three tabs would need more than the natural width to reach the
-             * same edge, so rule 2 applies: keep the widths, stay frozen. */
-            uiCheck("close-slide-expand-capped",
+            /* Three tabs cannot reach the closed tab's edge within the natural
+             * width, so they stop at the natural row end - the exact layout the
+             * strip falls back to when the pointer leaves. */
+            uiCheck("close-slide-grow-natural",
                     uiChromeCloseSliding(&chrome) == 1 &&
-                    chrome.tabstrip.tab[2].w == w2_before);
+                    chrome.tabstrip.tab[0].w == chrome.theme.tab_max_w);
 
             uiChromeEndCloseSlide(&chrome);
             uiChromeLayout(&chrome, 900, 300);
+
+            uiCheck("close-slide-natural-no-jump",
+                    chrome.tabstrip.tab[0].w == chrome.theme.tab_max_w);
         }
 
         /* Same rule starting in the middle of the row: the growth target is
@@ -12953,6 +12955,7 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR commandLine, 
 
     return 0;
 }
+
 
 
 

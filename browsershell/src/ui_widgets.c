@@ -495,26 +495,31 @@ void uiTabStripLayout(UiTabStrip* strip, const UiTheme* theme,
     }
 
     /* A frozen row whose hole is at the right edge has nothing to slide into
-     * it. Grow the remaining tabs just enough that the row ends where the
-     * closed tab ended (the closed tab's right edge = where its X was), so the
-     * last remaining tab's chip lands under the pointer and closing continues
-     * to the left. Blank space that was already on the right of the closed tab
-     * stays; the growth is never taken from it. Natural-width tabs cannot grow
-     * past tab_max_w, where the row simply keeps its geometry. The result
+     * it. Grow the remaining tabs so the row ends where the closed tab ended
+     * (its right edge = where its X was), which puts the last remaining tab's
+     * chip under the pointer so closing can continue to the left. Never grow
+     * past the natural width (tab_max_w): when the closed tab's edge is beyond
+     * that, stop at the natural row end instead - the tabs are then already in
+     * their post-slide state, so leaving the strip changes nothing. Blank space
+     * to the right of the closed tab is never taken by the growth. The result
      * becomes the new frozen layout (the slide stays on until the pointer
      * leaves the strip). */
     expand = sliding && strip->slide_fill < 0;
 
     if (expand) {
+        int start = area.x + pad + plus + gap;
+        int natural_right = start + visible * (theme->tab_max_w + gap) - gap;
+        int grow_right = strip->slide_closed_right;
+        int expand_avail;
+
+        if (grow_right > natural_right)
+            grow_right = natural_right;
+
         /* available counts slot widths including the last gap, while the row
          * ends one gap before start + available. */
-        int expand_avail = strip->slide_closed_right - (area.x + pad + plus + gap) + gap;
-        int max_avail = visible * (theme->tab_max_w + gap) - gap;
+        expand_avail = grow_right - start + gap;
 
-        /* Growth is only fine while it stays within the natural width; the
-         * pointer cannot be reached without exceeding it, so leave the row (and
-         * its blank) alone. */
-        if (expand_avail < 1 || expand_avail > max_avail)
+        if (expand_avail < 1)
             expand = 0;
         else
             available = expand_avail;   /* the distribution fills exactly this */
