@@ -50,9 +50,13 @@ if ($dir -and -not (Test-Path $dir)) {
     New-Item -ItemType Directory -Force $dir | Out-Null
 }
 
-# Do not touch the file when nothing changed: every source that includes it
-# would otherwise recompile on each build.
-$old = if (Test-Path $OutFile) { Get-Content $OutFile -Raw } else { $null }
-if ($old -ne ($content + "`n")) {
-    Set-Content -Path $OutFile -Value $content -Encoding ASCII
+# CRLF + one trailing newline, so the byte comparison below is stable. Do not
+# touch the file when nothing changed: every source that includes it would
+# otherwise recompile on each build.
+$content = $content -replace "`r?`n", "`r`n"
+if (-not $content.EndsWith("`r`n")) { $content += "`r`n" }
+
+$old = if (Test-Path $OutFile) { [System.IO.File]::ReadAllText($OutFile) } else { $null }
+if ($old -ne $content) {
+    [System.IO.File]::WriteAllText($OutFile, $content, [System.Text.Encoding]::ASCII)
 }
