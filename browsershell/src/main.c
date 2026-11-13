@@ -5531,8 +5531,14 @@ static LRESULT CALLBACK shellProcInner(HWND hwnd, UINT message, WPARAM wParam, L
      * active window. Hidden test windows never activate, so creation and
      * handoff also set g_lastActive. */
     case WM_ACTIVATE:
-        if (LOWORD(wParam) != WA_INACTIVE && g_cur)
+        if (LOWORD(wParam) == WA_INACTIVE) {
+            /* The tab-search popup is a topmost layered window and never takes
+             * focus; without this it stayed on screen after switching away. */
+            if (uiTabSearchIsOpen())
+                uiTabSearchClose();
+        } else if (g_cur) {
             g_lastActive = g_cur;
+        }
         break;
 
     case WM_MOVE:
@@ -11488,6 +11494,38 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR commandLine, 
         if (win)
             g_cur = win;
 
+        /* The tab-search popup owns the keyboard and the wheel while it is
+         * open. A printable keydown is handled by the popup and then goes
+         * through TranslateMessage, so the WM_CHAR produced for the focused
+         * control is picked up on the next iteration and appended to the query
+         * (the popup itself is never focused). */
+        if (uiTabSearchIsOpen()) {
+            if (msg.message == WM_CHAR || msg.message == WM_IME_CHAR) {
+                uiTabSearchKey(WM_CHAR, msg.wParam, msg.lParam);
+                continue;
+            }
+
+            if (msg.message == WM_MOUSEWHEEL) {
+                uiTabSearchWheel(GET_WHEEL_DELTA_WPARAM(msg.wParam));
+                continue;
+            }
+
+            if (msg.message == WM_KEYDOWN &&
+                (!(GetKeyState(VK_CONTROL) & 0x8000) ||
+                 msg.wParam == VK_UP || msg.wParam == VK_DOWN ||
+                 msg.wParam == VK_PRIOR || msg.wParam == VK_NEXT ||
+                 msg.wParam == VK_HOME || msg.wParam == VK_END)) {
+                uiTabSearchKey(WM_KEYDOWN, msg.wParam, msg.lParam);
+
+                /* Enter/Esc/Tab end or consume the popup: no stray WM_CHAR
+                 * for the page afterwards. */
+                if (msg.wParam != VK_RETURN && msg.wParam != VK_ESCAPE &&
+                    msg.wParam != VK_TAB)
+                    TranslateMessage(&msg);
+                continue;
+            }
+        }
+
         /* Ctrl+wheel is the other half of Ctrl+plus: the shell owns the wheel
          * while Ctrl is down, steps the same zoom ladder and swallows the event,
          * so the page never scrolls (or zooms on its own) under the pointer. */
@@ -11541,20 +11579,6 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR commandLine, 
              * or the chrome - and otherwise stops a load in progress, like
              * Chrome. Neither had a handler: the bar could only be closed with
              * the mouse, and the README's "Esc stops" was never wired up. */
-            /* The tab-search popup owns the keyboard while it is open: the shell
-             * types the query and moves the selection, everything else is
-             * swallowed until it goes away. Ctrl+Shift+A toggles (handled below,
-             * before this branch). */
-            if (uiTabSearchIsOpen() && msg.message != WM_MOUSEMOVE) {
-                if (msg.message == WM_KEYDOWN || msg.message == WM_CHAR) {
-                    if (!(GetKeyState(VK_CONTROL) & 0x8000) ||
-                        msg.wParam == VK_UP || msg.wParam == VK_DOWN) {
-                        uiTabSearchKey(msg.message, msg.wParam, msg.lParam);
-                        continue;
-                    }
-                }
-            }
-
             if (msg.wParam == VK_ESCAPE && g_cur) {
                 if (g_inspectOn) {
                     inspectStop("esc");
@@ -11731,7 +11755,12 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR commandLine, 
                     toggleInspect();
                     continue;
                 }
-                if (msg.wParam == VK_TAB) { switchTab(shift ? -1 : 1); continue; }
+                if (msg.wParam == VK_TAB) {
+                    if (uiTabSearchIsOpen())
+                        uiTabSearchClose();
+                    switchTab(shift ? -1 : 1);
+                    continue;
+                }
                 /* Ctrl+L selects the current URL: typing then replaces it, which
                  * is also what stops "http://" + a typed path from being glued
                  * onto the old one. */

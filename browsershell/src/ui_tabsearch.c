@@ -61,6 +61,7 @@ typedef struct {
     int dragging_scroll;  /* the scrollbar thumb is being dragged */
     int scroll_drag_offset;
     int wheel_accum;      /* WM_MOUSEWHEEL leftovers (precision touchpads) */
+    int caret_on;         /* blink phase of the query caret */
     POINT origin;         /* screen position of the surface */
 
     int width;
@@ -469,10 +470,11 @@ static void tsRender(void)
         if (caret_x > text.x + text.w - tsScale(2))
             caret_x = text.x + text.w - tsScale(2);
 
-        uiFillRect(&painter,
-                   uiRectMake(caret_x, field.y + tsScale(9), caret_w,
-                              field.h - tsScale(18)),
-                   theme->text);
+        if (g_ts.caret_on)
+            uiFillRect(&painter,
+                       uiRectMake(caret_x, field.y + tsScale(9), caret_w,
+                                  field.h - tsScale(18)),
+                       theme->text);
 
         uiText(&painter, "Ctrl+Shift+A",
                uiRectMake(field.x + field.w - tsScale(94), field.y,
@@ -715,9 +717,57 @@ static void tsActivate(int row)
     (void)kind;
 }
 
+static void tsWheel(int delta)
+{
+    int step = tsScale(TS_ROW_H);
+
+    /* Accumulate: a precision touchpad sends deltas below WHEEL_DELTA and the
+     * old delta/120 arithmetic turned those into zero (no scrolling). */
+    g_ts.wheel_accum += delta;
+
+    while (g_ts.wheel_accum >= WHEEL_DELTA) {
+        g_ts.wheel_accum -= WHEEL_DELTA;
+        g_ts.scroll_y -= step;
+    }
+    while (g_ts.wheel_accum <= -WHEEL_DELTA) {
+        g_ts.wheel_accum += WHEEL_DELTA;
+        g_ts.scroll_y += step;
+    }
+
+    tsClampScroll();
+    tsRender();
+}
+
+void uiTabSearchWheel(int delta)
+{
+    if (!uiTabSearchIsOpen())
+        return;
+
+    tsWheel(delta);
+}
+
 static LRESULT CALLBACK tsProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lParam)
 {
     switch (message) {
+    case WM_MOUSEACTIVATE:
+        /* Never take activation: the shell keeps the keyboard so its loop can
+         * forward the query to uiTabSearchKey(). */
+        return MA_NOACTIVATE;
+
+    case WM_CAPTURECHANGED:
+        if (g_ts.captured) {
+            g_ts.captured = 0;
+            uiTabSearchClose();
+        }
+        return 0;
+
+    case WM_TIMER:
+        if (wParam == 1) {
+            g_ts.caret_on = !g_ts.caret_on;
+            tsRender();
+        }
+        return 0;
+
     case WM_MOUSEMOVE: {
         POINT point = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
         int on_thumb = 0;
@@ -756,8 +806,11 @@ static LRESULT CALLBACK tsProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lP
         /* The search field is the filter input: a click there must not dismiss
          * the popup. Only a click outside the panel closes it, like a menu. */
         if (point.x >= TS_MARGIN && point.x < TS_MARGIN + g_ts.width &&
-            point.y >= TS_MARGIN && point.y < TS_MARGIN + tsScale(TS_SEARCH_H))
+            point.y >= TS_MARGIN && point.y < TS_MARGIN + tsScale(TS_SEARCH_H)) {
+            g_ts.caret_on = 1;
+            tsRender();
             return 0;
+        }
 
         if (point.x < TS_MARGIN || point.x >= TS_MARGIN + g_ts.width ||
             point.y < TS_MARGIN || point.y >= TS_MARGIN + g_ts.height) {
@@ -810,27 +863,9 @@ static LRESULT CALLBACK tsProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lP
         return 0;
     }
 
-    case WM_MOUSEWHEEL: {
-        int delta = (int)(short)HIWORD(wParam);
-        int step = tsScale(TS_ROW_H);
-
-        /* Accumulate: a precision touchpad sends deltas below WHEEL_DELTA and
-         * the old delta/120 arithmetic turned those into zero (no scrolling). */
-        g_ts.wheel_accum += delta;
-
-        while (g_ts.wheel_accum >= WHEEL_DELTA) {
-            g_ts.wheel_accum -= WHEEL_DELTA;
-            g_ts.scroll_y -= step;
-        }
-        while (g_ts.wheel_accum <= -WHEEL_DELTA) {
-            g_ts.wheel_accum += WHEEL_DELTA;
-            g_ts.scroll_y += step;
-        }
-
-        tsClampScroll();
-        tsRender();
+    case WM_MOUSEWHEEL:
+        tsWheel((int)(short)HIWORD(wParam));
         return 0;
-    }
 
     default:
         break;
@@ -884,7 +919,8 @@ int uiTabSearchOpen(HWND owner, const UiTheme* theme,
             class_registered = 1;
         }
 
-        g_ts.hwnd = CreateWindowExA(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST,
+        g_ts.hwnd = CreateWindowExA(WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_TOPMOST |
+                                        WS_EX_NOACTIVATE,
                                     "AgaveShellTabSearch", "", WS_POPUP,
                                     0, 0, 0, 0, NULL, NULL,
                                     GetModuleHandleA(NULL), NULL);
@@ -925,12 +961,15 @@ int uiTabSearchOpen(HWND owner, const UiTheme* theme,
                  g_ts.width + TS_MARGIN * 2, g_ts.height + TS_MARGIN * 2,
                  SWP_NOACTIVATE | SWP_SHOWWINDOW);
 
+    g_ts.caret_on = 1;
     tsRender();
 
     if (!g_ts.captured) {
         SetCapture(g_ts.hwnd);
         g_ts.captured = 1;
     }
+
+    SetTimer(g_ts.hwnd, 1, GetCaretBlinkTime() > 0 ? GetCaretBlinkTime() : 530, NULL);
 
     return 1;
 }
@@ -974,9 +1013,11 @@ void uiTabSearchClose(void)
     if (!g_ts.hwnd)
         return;
 
+    KillTimer(g_ts.hwnd, 1);
+
     if (g_ts.captured) {
+        g_ts.captured = 0;      /* before ReleaseCapture: WM_CAPTURECHANGED must not recurse */
         ReleaseCapture();
-        g_ts.captured = 0;
     }
 
     ShowWindow(g_ts.hwnd, SW_HIDE);
@@ -993,6 +1034,8 @@ void uiTabSearchKey(UINT message, WPARAM wParam, LPARAM lParam)
         return;
 
     (void)lParam;
+
+    g_ts.caret_on = 1;
 
     if (message == WM_KEYDOWN) {
         switch (wParam) {

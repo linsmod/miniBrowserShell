@@ -57,4 +57,8 @@ int  uiTabSearchIsOpen(void);
 /* Keyboard from the shell's loop: WM_KEYDOWN and WM_CHAR. */
 void uiTabSearchKey(UINT message, WPARAM wParam, LPARAM lParam);
 
+/* Wheel from the shell's loop (the layered popup is never focused, so the
+ * wheel can land on the page instead of the list). delta is WHEEL_DELTA units. */
+void uiTabSearchWheel(int delta);
+
 #endif /* AGAVE_UI_TABSEARCH_H */
