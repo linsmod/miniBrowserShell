@@ -337,27 +337,26 @@ void uiChromeLayout(UiChrome* chrome, int width, int height)
         chrome->find_edit = uiRectMake(0, 0, 0, 0);
     }
 
-    /* Status bubble: bottom-left of the content, sized to its text (plus the
-     * zoom pill when zoomed). Hidden when there is no message - "Ready" is not
-     * a message, and a permanent row used to cost the page 24 px. A zero rect
-     * means "not shown, nothing to hit". */
+    /* Status bubble: bottom-left of the content, sized to its text. Hidden when
+     * there is no message - "Ready" is not a message, and a permanent row used
+     * to cost the page 24 px. A zero rect means "not shown, nothing to hit". */
     memset(&chrome->statusbar, 0, sizeof(chrome->statusbar));
 
     {
         int has_message = model->status[0] != 0 &&
                           strcmp(model->status, "Ready") != 0;
-        int zoomed = model->zoom != 100;
         int bubble_h = status_h;
         int pad;
-        int zoom_w = zoomed ? scale(theme, 46) + scale(theme, 8) : 0;
         int max_w = chrome->content.w - scale(theme, 24);
         int text_w = 0;
         int text_h = 0;
         int w;
 
-        if ((has_message || zoomed) && max_w > scale(theme, 90)) {
-            uiMeasureText(theme, theme->font_small,
-                          has_message ? model->status : "", &text_w, &text_h);
+        /* The bubble exists for its message only: the zoom pill that used to
+         * ride on it is gone, so a non-100% zoom no longer keeps an empty
+         * bubble on screen. */
+        if (has_message && max_w > scale(theme, 90)) {
+            uiMeasureText(theme, theme->font_small, model->status, &text_w, &text_h);
 
             /* Left/right padding mirrors the vertical one: the text is centred in
              * the bubble, so the air above it is the air that belongs beside it.
@@ -369,7 +368,7 @@ void uiChromeLayout(UiChrome* chrome, int width, int height)
             if (pad < scale(theme, 2))
                 pad = scale(theme, 2);
 
-            w = pad * 2 + text_w + zoom_w;
+            w = pad * 2 + text_w;
 
             if (w > max_w)
                 w = max_w;
@@ -382,16 +381,7 @@ void uiChromeLayout(UiChrome* chrome, int width, int height)
             chrome->statusbar.text = uiRectMake(
                 chrome->statusbar.rect.x + pad,
                 chrome->statusbar.rect.y + pad,
-                w - pad * 2 - zoom_w, bubble_h - pad * 2);
-
-            if (zoomed) {
-                int zh = bubble_h - scale(theme, 8);
-
-                chrome->statusbar.zoom = uiRectMake(
-                    chrome->statusbar.rect.x + w - zoom_w + scale(theme, 4),
-                    chrome->statusbar.rect.y + scale(theme, 4),
-                    scale(theme, 46), zh);
-            }
+                w - pad * 2, bubble_h - pad * 2);
         }
     }
 }
@@ -595,7 +585,7 @@ void uiChromePaintFindOverlay(UiChrome* chrome, HDC hdc, int width, int height)
 }
 
 /* The status bubble is painted into its own overlay window (like the find bar):
- * rounded card, the message, and the zoom pill when the page is zoomed. */
+ * rounded card and the message. */
 static void paintStatusBubble(UiChrome* chrome, UiPainter* painter, int dx, int dy)
 {
     UiTheme* theme = &chrome->theme;
@@ -616,18 +606,6 @@ static void paintStatusBubble(UiChrome* chrome, UiPainter* painter, int dx, int 
 
     uiText(painter, chrome->model.status, text, theme->font_small,
            theme->text, UI_ALIGN_LEFT);
-
-    if (chrome->model.zoom != 100 && bar->zoom.w > 0) {
-        char label[32];
-        UiRect zoom = uiRectMake(bar->zoom.x + dx, bar->zoom.y + dy,
-                                 bar->zoom.w, bar->zoom.h);
-
-        _snprintf(label, sizeof(label), "%d%%", chrome->model.zoom);
-        label[sizeof(label) - 1] = 0;
-
-        uiFillRoundRect(painter, zoom, scale(theme, 8), theme->accent_soft);
-        uiText(painter, label, zoom, theme->font_small, theme->accent, UI_ALIGN_CENTER);
-    }
 }
 
 void uiChromePaintStatusOverlay(UiChrome* chrome, HDC hdc, int width, int height)

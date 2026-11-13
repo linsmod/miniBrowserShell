@@ -70,8 +70,11 @@ Start-Sleep -Milliseconds 500
 cmake --build build-msvc --config Release
 ```
 
-exe 被占用又不想打断正在跑的实例时，可以配置另一个构建目录（`build*/` 已被忽略）：
-`cmake -S . -B build-check -G "Visual Studio 17 2022" -A x64` +
-`cmake --build build-check --config Release`，跑脚本时用 `-Exe build-check\Release\minishell.exe`。
+**只允许 `build-msvc`，禁止另建构建目录。** 用户测试的就是
+`build-msvc\Release\minishell.exe`；用 `build-check`、`build-x` 之类的目录编出来的 exe
+和用户手上的不是同一个文件（时间戳、复制过去的 DLL/脚本都可能不同），测试结论就对不上。
+exe 被占用时先按上面的命令杀进程，不要换目录绕开。
+
+编译完必须确认输出行是 `build-msvc\Release\minishell.exe`，再跑 `tools/` 里的脚本（它们固定用这个路径）。
 
 改 DLL 后重生成导入库：`pwsh -File tools\gen_import_lib.ps1`。

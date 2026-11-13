@@ -9,16 +9,14 @@
 #   zoom 125, display 125 -> dpr 1.5625 innerWidth 704
 #
 #   pwsh -File tools\zoom-check.ps1
-#   pwsh -File tools\zoom-check.ps1 -Exe build-check\Release\minishell.exe
 param(
-    [string]$Exe = "",
     [int]$Timeout = 30000
 )
 
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-if (-not $Exe) { $Exe = Join-Path $root 'build-msvc\Release\minishell.exe' }
-if (-not (Test-Path $Exe)) { throw "minishell.exe not found: $Exe" }
+$exe = Join-Path $root 'build-msvc\Release\minishell.exe'
+if (-not (Test-Path $exe)) { throw "minishell.exe not found: $exe" }
 
 $page = Join-Path $env:TEMP 'mb-zoom-check.html'
 @'
@@ -45,7 +43,7 @@ foreach ($case in $cases) {
               '--eval-file', $eval, '--wait', '400', '--settle', '600', '--timeout', "$Timeout")
     if ($case.dpi -gt 100) { $args += @('--device-scale', "$($case.dpi)") }
 
-    $proc = Start-Process -FilePath $Exe -ArgumentList $args -RedirectStandardOutput $out `
+    $proc = Start-Process -FilePath $exe -ArgumentList $args -RedirectStandardOutput $out `
         -RedirectStandardError ($out + '.err') -PassThru -WindowStyle Hidden
     $null = $proc.WaitForExit($Timeout + 10000)
     if (-not $proc.HasExited) { $proc.Kill() }

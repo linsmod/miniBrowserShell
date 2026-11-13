@@ -65,7 +65,6 @@ typedef struct {
 typedef struct {
     UiRect rect;
     UiRect text;
-    UiRect zoom;
 } UiStatusBar;
 
 typedef struct UiChrome {

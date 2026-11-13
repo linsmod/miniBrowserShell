@@ -1074,9 +1074,9 @@ static void placeChild(HWND child, int x, int y, int w, int h)
 static HWND createFindOverlay(ShellWindow* win);
 static void invalidateFindOverlay(void);
 
-/* Status bubble: only while there is a message (or the page is zoomed); "Ready"
- * is not a message, and the page keeps its full height either way. Called from
- * layoutAll() and whenever the status text changes. */
+/* Status bubble: only while there is a message; "Ready" is not a message, and
+ * the page keeps its full height either way. Called from layoutAll() and whenever
+ * the status text changes. */
 static void syncStatusOverlay(void);
 static HWND createStatusOverlay(ShellWindow* win);
 static void syncTabSearch(void);
@@ -1148,10 +1148,10 @@ static void updateStatus(void)
     Tab* tab = &g_tabs[g_activeTab];
     char text[1024];
 
-    /* The bubble only exists while it has something to say, a message (hover
-     * link / download / error / bookmark / inspect target), or a zoom level. The
-     * plain URL is not a message - a bubble that never hides is just the old
-     * status bar wearing a costume. */
+    /* The bubble only exists while it has something to say: a message (hover
+     * link / download / error / bookmark / inspect target). The plain URL is not
+     * a message - a bubble that never hides is just the old status bar wearing a
+     * costume. */
     text[0] = 0;
 
     if (tab->used) {
@@ -1170,8 +1170,6 @@ static void updateStatus(void)
     if (strcmp(text, g_status) == 0)
         return;
 
-    /* The zoom level is the bubble's own pill (uiChromeFieldState-style: the
-     * message and the pill are separate), so it is not glued into the text. */
     strncpy(g_status, text, sizeof(g_status) - 1);
     g_status[sizeof(g_status) - 1] = 0;
 
@@ -9121,28 +9119,14 @@ static int uiShotMain(void)
                 uiChromePaintStatusOverlay(&chrome, bubbleDc, bubble->w, bubble->h);
                 GdiFlush();
 
-                /* The centre row is text; sample the fill between the message
-                 * and the zoom pill, and the pill itself. */
+                /* Sample the fill under the message (bottom padding of the
+                 * card, away from any glyph). */
                 uiCheck("pixel-status-bubble",
                         sameColor(shotPixel((const unsigned char*)bubbleBits,
                                             bubble->w, bubble->h,
-                                            bubble->w -
-                                                uiThemeScale(&chrome.theme, 58),
-                                            bubble->h / 2),
+                                            bubble->w / 2,
+                                            bubble->h - 3),
                                   chrome.theme.surface));
-                uiCheck("pixel-status-zoom",
-                        sameColor(shotPixel((const unsigned char*)bubbleBits,
-                                            bubble->w, bubble->h,
-                                            /* Inside the pill's left padding:
-                                             * the centre holds the "110%" text,
-                                             * and a glyph landing on the sample
-                                             * point made this check depend on
-                                             * how text is rasterized. */
-                                            chrome.statusbar.zoom.x -
-                                                chrome.statusbar.rect.x +
-                                                uiThemeScale(&chrome.theme, 5),
-                                            bubble->h / 2),
-                                  chrome.theme.accent_soft));
 
                 /* Layered presentation needs real alpha: the rounded corners must
                  * be transparent and the card opaque. A window region would give

@@ -164,6 +164,10 @@ static mbProxy g_systemProxy;
 static int     g_systemProxySet;
 static int     g_systemProxyLoaded;
 
+/* Feeds the engine the page's device scale (page zoom * display scale). Defined
+ * with the rest of the zoom API further down, needed by the callbacks above it. */
+static void viewApplyEngineScale(MbView* v);
+
 /* ------------------------------------------------------------------------- */
 /* small helpers                                                             */
 /* ------------------------------------------------------------------------- */
@@ -630,6 +634,11 @@ static void deliverEvent(MbView* v, MbEvent* e)
         break;
 
     case MBV_EV_DOCREADY:
+        /* Last chance to pin the page scale: the engine may have replaced it
+         * while creating the document (see viewApplyEngineScale). In the shell
+         * the value equals the display scale, so this is a no-op there; in a
+         * probe it makes devicePixelRatio deterministic. */
+        viewApplyEngineScale(v);
         injectPrelude(v);
         if (v->loading) {
             v->progress = 60;
@@ -665,10 +674,21 @@ static void MB_CALL_TYPE mbvOnTitle(mbWebView wv, void* param, const utf8* title
 static void MB_CALL_TYPE mbvOnUrl(mbWebView wv, void* param, const utf8* url,
                                   BOOL canGoBack, BOOL canGoForward)
 {
+    MbView* v = (MbView*)param;
+
     (void)wv;
     trace("cb url: %s back=%d fwd=%d", url ? url : "",
           canGoBack ? 1 : 0, canGoForward ? 1 : 0);
-    postEvent((MbView*)param, MBV_EV_URL, url, NULL,
+
+    /* The engine drops a zoom set while the view has no document (the first
+     * paint brings its own default), so the page scale is re-applied as soon as
+     * the new document commits. Without this, a probe or a fast tab could keep
+     * the engine default and report a devicePixelRatio the shell never asked
+     * for. */
+    if (v && !v->destroying)
+        viewApplyEngineScale(v);
+
+    postEvent(v, MBV_EV_URL, url, NULL,
               canGoBack ? 1 : 0, canGoForward ? 1 : 0);
 }
 
