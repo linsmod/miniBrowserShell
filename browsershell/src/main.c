@@ -23,6 +23,7 @@
 
 #include "agave_webview.h"
 #include "agb_log.h"
+#include "build_info.h"
 #include "crash_page.h"
 #include "crash_report.h"
 #include "shell_ops.h"
@@ -4222,7 +4223,7 @@ static void applyThemePref(int pref)
  * (spaces, backslashes) survives as-is because '=' is the only separator. */
 static void settingsSend(AgaveWebView* view, const char* key, const char* value)
 {
-    char message[600];
+    char message[4096];
     char* p;
 
     if (!view || !key)
@@ -4290,7 +4291,17 @@ static void settingsSendAll(AgaveWebView* view)
         settingsSend(view, "dpi", text);
     }
 
-    settingsSend(view, "version", "miniblink 132, built " __DATE__);
+    _snprintf(text, sizeof(text), "miniblink 132, built %s", buildInfoShellBuild());
+    settingsSend(view, "version", text);
+
+    /* Identification a bug report needs; the same facts go into the crash
+     * report (build_info.c), and the engine hash is the build's fingerprint. */
+    settingsSend(view, "project", buildInfoProjectUrl());
+    settingsSend(view, "engine", buildInfoEngineVersion());
+    settingsSend(view, "enginehash", buildInfoEngineSha256());
+    settingsSend(view, "launch", buildInfoLaunchArgs());
+    settingsSend(view, "env", buildInfoLaunchEnv());
+
     settingsSend(view, "done", "1");
 }
 

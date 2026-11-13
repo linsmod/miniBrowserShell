@@ -41,6 +41,7 @@ MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webv
 | `tools/hangserver.ps1` | 只 accept 不响应的 TCP 服务，用来触发"加载永不提交"和导航守卫 |
 | `tools/navguard-check.ps1` | 导航守卫销毁在途控件（请求随后失败）不再把引擎带崩：隐藏壳 + 6 秒后关闭服务端，12 秒仍存活 |
 | `tools/repro-destroy-inflight.ps1` | 只依赖 `mb132_x64.dll` 的最小复现（给引擎作者）：在途请求时 `mbDestroyWebView` → 6 秒后服务端关闭即 AV |
+| `tools/crash-report-check.ps1` | 崩溃报告要带项目地址、`mb132_x64.dll` SHA-256、脱敏启动参数/环境，且不能泄露启动 URL 或路径 |
 
 崩溃链路（报告 → 崩溃页）可以 headless 验证，不要开窗口：
 `AGB_TEST_CRASH=1 AGB_CRASH_POPUP=0` 只写 `agb_crash.txt`；

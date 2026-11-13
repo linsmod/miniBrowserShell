@@ -33,6 +33,11 @@ probeExit('theme=' + theme + '|search=' + search + '|zoom=' + zoom +
           '|downloads=' + document.getElementById('downloads').textContent +
           '|scale=' + document.getElementById('scale').textContent +
           '|dpi=' + document.getElementById('dpi').textContent +
+          '|project=' + document.getElementById('project').textContent +
+          '|engine=' + document.getElementById('engine').textContent +
+          '|enginehash=' + document.getElementById('enginehash').textContent +
+          '|launch=' + document.getElementById('launch').textContent +
+          '|env=' + document.getElementById('env').textContent +
           '|ddOpen=' + ddOpen + '|ddPick=' + ddPick + '|ddClosed=' + ddClosed);
 '@
 
@@ -69,6 +74,16 @@ if ($fields['ddPick'] -ne 'bing') { $problems += "dropdown pick did not stick (d
 if ($fields['ddClosed'] -ne 'true') { $problems += 'dropdown stayed open after picking' }
 if ($fields['scale'] -notmatch '^[0-9]+%$') { $problems += "scale='$($fields['scale'])'" }
 if ($fields['dpi'] -notmatch '^[0-9]+ dpi$') { $problems += "dpi='$($fields['dpi'])'" }
+
+# About: the identification a bug report needs. The launch/env summary is
+# sanitized, so it must never echo a path or URL.
+if ($fields['project'] -ne 'https://github.com/linsmod/miniBrowserShell') { $problems += "project='$($fields['project'])'" }
+if ($fields['engine'] -notmatch '^mb132_x64\.dll ') { $problems += "engine='$($fields['engine'])'" }
+if ($fields['enginehash'] -notmatch '^[0-9a-f]{64}$') { $problems += "enginehash='$($fields['enginehash'])'" }
+if (-not $fields['launch']) { $problems += 'launch is empty' }
+if (-not $fields['env']) { $problems += 'env is empty' }
+if ($fields['launch'] -match 'C:\\|://') { $problems += "launch leaks a path/url: '$($fields['launch'])'" }
+if ($fields['env'] -match 'C:\\|://') { $problems += "env leaks a path/url: '$($fields['env'])'" }
 
 "settings page: $payload"
 "exit=$($out.exit) wall=$($out.seconds)s"

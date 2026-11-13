@@ -10,6 +10,7 @@ set(SHELL_SOURCES
     src/main.c
     src/mb_view.c
     src/agb_log.c
+    src/build_info.c
     src/crash_page.c
     src/crash_report.c
     src/shot_png.c

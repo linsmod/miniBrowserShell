@@ -10,6 +10,7 @@
  *   - the only "environment" facts are OS build, architecture, DPI and uptime
  */
 #include "crash_report.h"
+#include "build_info.h"
 
 #include <winternl.h>
 #include <tlhelp32.h>
@@ -279,7 +280,6 @@ size_t crashReportFormat(char* buf, size_t cap, EXCEPTION_RECORD* rec)
     char when[64];
     char os[96];
     char addr[160];
-    char engineVersion[64];
     size_t len = 0;
     int i;
 
@@ -298,19 +298,6 @@ size_t crashReportFormat(char* buf, size_t cap, EXCEPTION_RECORD* rec)
 
     osVersion(os, sizeof(os));
 
-    engineVersion[0] = 0;
-    for (i = 0; i < s_moduleCount; ++i) {
-        char name[96];
-
-        utf8FromWide(s_modules[i].name, name, sizeof(name));
-        if (!_stricmp(name, "mb132_x64.dll")) {
-            fileVersion(s_modules[i].path, engineVersion, sizeof(engineVersion));
-            break;
-        }
-    }
-    if (!engineVersion[0])
-        strcpy(engineVersion, "unknown");
-
     if (rec)
         formatAddress((unsigned long long)(uintptr_t)rec->ExceptionAddress, addr, sizeof(addr));
     else
@@ -327,12 +314,20 @@ size_t crashReportFormat(char* buf, size_t cap, EXCEPTION_RECORD* rec)
         "x86"
 #endif
     );
-    app(buf, cap, &len, "Engine      mb132_x64.dll %s\n", engineVersion);
+    app(buf, cap, &len, "Engine      mb132_x64.dll %s\n", buildInfoEngineVersion());
+    app(buf, cap, &len, "Engine hash SHA-256 %s\n", buildInfoEngineSha256());
+    app(buf, cap, &len, "Project     %s\n", buildInfoProjectUrl());
     app(buf, cap, &len, "OS          %s, DPI %u (%u%%)\n", os, systemDpi(),
         (systemDpi() * 100 + 48) / 96);
     app(buf, cap, &len, "Process     pid %lu, uptime %llu s\n",
         (unsigned long)GetCurrentProcessId(), processUptimeSeconds());
-    app(buf, cap, &len, "Privacy     no URLs, file paths, account or machine names\n\n");
+    app(buf, cap, &len, "Privacy     no URLs, file paths, account or machine names;\n"
+                        "            launch flags omit their paths/URLs\n\n");
+
+    app(buf, cap, &len, "Launch\n");
+    app(buf, cap, &len, "------\n");
+    app(buf, cap, &len, "args        %s\n", buildInfoLaunchArgs());
+    app(buf, cap, &len, "env         %s\n\n", buildInfoLaunchEnv());
 
     app(buf, cap, &len, "Exception\n");
     app(buf, cap, &len, "---------\n");

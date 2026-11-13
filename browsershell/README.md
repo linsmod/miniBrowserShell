@@ -95,7 +95,8 @@ Cookie / localStorage 都在这个目录下，每个标签共享同一 profile�
 - 自绘右键菜单和应用菜单、书签/历史子菜单
 - 主题 `AGB_SHELL_THEME=light|dark|auto`、Per-Monitor V2 DPI
 - 设置页（应用菜单 → Settings）：主题、搜索引擎、默认缩放、启动恢复会话、清空历史、下载目录；
-  改动即时生效并写入 `<profile>/prefs.txt`（主题仍在 `theme.txt`）
+  改动即时生效并写入 `<profile>/prefs.txt`（主题仍在 `theme.txt`）；About 区显示项目地址、
+  引擎版本与 SHA-256、启动参数和环境摘要
 - 下载：写入系统 Downloads（或 `--download-dir` 之外的默认目录），状态气泡显示进度/结果
 - 单实例 / `--new-tab` / `--new-window` 交接到已运行窗口
 - 崩溃：隐私无关的 `agb_crash.txt` + 独立的崩溃页（完整诊断、一键复制报告）
@@ -119,8 +120,13 @@ miniblink 偶尔会**静默丢掉一个新控件的第一次导航**：没有 `m
 
 崩溃时外壳在进程 CWD 写 `agb_crash.txt`（完整报告），并另起一个进程显示崩溃页：
 异常代码/地址、访问类型、完整调用栈（`模块+偏移`）、全部已加载模块及版本、系统版本、
-架构、DPI、进程存活时间。**报告不含隐私**：没有 URL、页面标题、文件路径、账号或机器名，
-只有模块名。页面上有一个 **Copy report** 按钮，复制出来的就是报告全文，可以直接贴到 issue；
+架构、DPI、进程存活时间，以及**排查构建用的标识**：项目地址、`mb132_x64.dll` 的 SHA-256、
+启动参数和环境变量摘要（URL/profile 路径等一律显示为 `(set)` / `(url omitted)`）。
+设置页的 **About** 也显示同一组信息（Project / Engine / Engine SHA-256 / Launched with /
+Environment），方便用户报问题时对照。
+
+**报告不含隐私**：没有 URL、页面标题、文件路径、账号或机器名，只有模块名和脱敏后的启动开关。
+页面上有一个 **Copy report** 按钮，复制出来的就是报告全文，可以直接贴到 issue；
 报告文件本身也可以作为附件。报告里的帧是 `模块+偏移`，维护者用对应版本的 PDB /
 `build-msvc/minishell.map` 还原符号。
 
