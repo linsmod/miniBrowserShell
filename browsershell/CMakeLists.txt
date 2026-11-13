@@ -60,13 +60,9 @@ add_custom_command(TARGET minishell POST_BUILD
             "$<TARGET_FILE_DIR:minishell>/mb132_x64.dll"
     COMMENT "Copying mb132_x64.dll next to minishell.exe")
 
-if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/assets")
-    add_custom_command(TARGET minishell POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-                "${CMAKE_CURRENT_SOURCE_DIR}/assets"
-                "$<TARGET_FILE_DIR:minishell>"
-        COMMENT "Copying inspector.js / vconsole.min.js")
-endif()
+# assets/inspect.js is compiled into the exe by app.rc (RCDATA 201), so no
+# runtime copy is needed. A file with that name next to the exe still overrides
+# it while editing the script.
 
 if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/fonts")
     add_custom_command(TARGET minishell POST_BUILD

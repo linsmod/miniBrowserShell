@@ -21,7 +21,8 @@
 
 | 路径 | 说明 |
 |---|---|
-| `app.rc` / `app.ico` | 可执行文件与窗口图标（ID 101，`main.c` 里注册到窗口类） |
+| `app.rc` / `app.ico` | 可执行文件与窗口图标（ID 101，`main.c` 里注册到窗口类）；`assets/inspect.js` 也由它编进 exe（RCDATA 201） |
+| `assets/inspect.js` | F12 元素标记的页面半边；已嵌入 exe，exe 旁放同名文件可覆盖（方便改脚本） |
 | `src/main.c` | 外壳主体（来自 agave，替换了引擎调用与品牌/内部页） |
 | `src/mb_view.c` | 适配层：用 miniblink 实现 `agave_webview_*` 控制 API |
 | `src/agave_webview.h` | 外壳与控件之间的 C 接口（含 `MC_DOWNLOAD_INFO`） |
@@ -144,9 +145,10 @@ Environment），方便用户报问题时对照。
 - 查找是 DOM 注入实现；页面若禁用脚本或 DOM 极大，效果不如原生 find-in-page。
 - 下载进度依赖未文档化回调；若换 DLL 后行为变化，可用 `tools/dlserver.ps1` 回归。
 - **不接 Chromium DevTools**（`devtools.asar` / `minidevtools_x64.exe` 不参与运行）。
-  调试统一走 `inspector.js`：F12、右键菜单和应用菜单里的“注入 inspector.js”都会把
-  exe 旁的 `inspector.js` 注入当前页（`assets/` 里的副本由 CMake 自动复制）；
-  右键菜单的“注入 vConsole”使用同目录的 `vconsole.min.js`。
+  调试用 F12 的宿主元素标记：页面半边 `assets/inspect.js` 通过 `app.rc`（RCDATA 201）
+  **编进 exe**，F12 / 右键菜单 / 应用菜单都不再依赖 exe 旁的文件；把同名 `inspect.js`
+  放在 exe 旁仍会覆盖内嵌副本（方便改脚本后免重编译）。`--inject <file>` 仍可注入
+  任意外部脚本。
 
 ## 调试
 

@@ -36,6 +36,9 @@
 #define MAX_TABS        UI_MAX_TABS
 #define MAX_PATH_CHARS  1024
 
+/* app.rc: the page half of the F12 element marker (assets/inspect.js). */
+#define IDR_INSPECT_JS  201
+
 /* The engine's context-menu item ids (mb.h: mbMenuItemId). Editing and image
  * commands are handed back to miniblink instead of being emulated here, so they
  * target the right frame and keep the engine's own state in sync. */
@@ -2301,7 +2304,7 @@ static void forwardActive(const char* source);
 static void stopActive(const char* source);
 
 /* ------------------------------------------------------------------------- */
-/* script injection (inspector.js / vConsole)                                */
+/* script injection (inspect.js / --inject files)                            */
 /* ------------------------------------------------------------------------- */
 
 /* Menu labels are UTF-8 (the shell speaks UTF-8 everywhere); the self-drawn
@@ -2352,23 +2355,64 @@ static char* readFileUtf8(const wchar_t* path, size_t* lengthOut)
     return buffer;
 }
 
+/* Reads a script compiled into the exe (app.rc RCDATA). The resource is not
+ * NUL terminated, so copy it; the caller frees the result. */
+static char* readEmbeddedScript(int id, size_t* lengthOut)
+{
+    HRSRC resource;
+    HGLOBAL handle;
+    DWORD size;
+    const void* data;
+    char* copy;
+
+    if (lengthOut)
+        *lengthOut = 0;
+
+    resource = FindResourceA(GetModuleHandleA(NULL), MAKEINTRESOURCEA(id), RT_RCDATA);
+    if (!resource)
+        return NULL;
+
+    handle = LoadResource(NULL, resource);
+    if (!handle)
+        return NULL;
+
+    size = SizeofResource(NULL, resource);
+    data = LockResource(handle);
+    if (!data || size == 0)
+        return NULL;
+
+    copy = (char*)malloc((size_t)size + 1);
+    if (!copy)
+        return NULL;
+
+    memcpy(copy, data, size);
+    copy[size] = 0;
+
+    if (lengthOut)
+        *lengthOut = size;
+
+    return copy;
+}
+
 /* Runs a JS file in the page. The file is looked up next to minishell.exe
- * first (the build copies inspector.js / vconsole.min.js there), then in the
- * current directory; $AGB_INSPECTOR overrides the inspector.js path. Keeping
- * the injection as a file on disk means it can be edited and re-injected
- * without relinking, the same deal as prelude.js/polyfills.js.
+ * first, then in the current directory; when neither exists and `embeddedId`
+ * is set, the copy compiled into the exe is used (that is how inspect.js works,
+ * so F12 needs no files next to the exe). A file on disk still wins, which
+ * keeps the script editable while developing it.
  *
  * `suffix` (optional) is appended after a newline and evaluated in the same
  * script: a UMD bundle needs its bootstrap to run only after the bundle has
  * registered itself, and one eval keeps that ordering independent of the
  * command queue. */
 static int injectScriptAsset(AgaveWebView* view, const char* fileName,
-                             const char* envName, const char* suffix)
+                             const char* envName, const char* suffix,
+                             int embeddedId)
 {
     wchar_t path[MAX_PATH_CHARS];
     char* script = NULL;
     size_t length = 0;
     size_t fileLength = 0;
+    int fromResource = 0;
     /* Probe mode has no tabs/window context: injection still has to work
      * (--inject is a probe flag), it just has no status bar to write to. */
     Tab* tab = g_cur ? &g_tabs[g_activeTab] : NULL;
@@ -2414,6 +2458,12 @@ static int injectScriptAsset(AgaveWebView* view, const char* fileName,
         script = readFileUtf8(path, &length);
     }
 
+    if (!script && embeddedId) {
+        script = readEmbeddedScript(embeddedId, &length);
+        if (script)
+            fromResource = 1;
+    }
+
     if (!script) {
         if (tab && tab->used) {
             _snprintf(tab->status, sizeof(tab->status),
@@ -2447,8 +2497,9 @@ static int injectScriptAsset(AgaveWebView* view, const char* fileName,
     agave_webview_set_focus(view);
     free(script);
 
-    agbLog(AGB_LOG_SHELL, "inject: %s (%lu bytes, eval %lu)",
-           fileName, (unsigned long)fileLength, (unsigned long)length);
+    agbLog(AGB_LOG_SHELL, "inject: %s (%lu bytes%s, eval %lu)",
+           fileName, (unsigned long)fileLength, fromResource ? ", embedded" : "",
+           (unsigned long)length);
 
     if (tab && tab->used && tab->view == view) {
         _snprintf(tab->status, sizeof(tab->status),
@@ -2462,44 +2513,21 @@ static int injectScriptAsset(AgaveWebView* view, const char* fileName,
 
 static int injectScriptFile(AgaveWebView* view, const char* fileName, const char* envName)
 {
-    return injectScriptAsset(view, fileName, envName, NULL);
-}
+    /* inspect.js is the page half of the F12 marker and ships inside the exe;
+     * any other name is a plain file on disk (--inject). */
+    int embeddedId = !_stricmp(fileName, "inspect.js") ? IDR_INSPECT_JS : 0;
 
-/* vConsole is the default payload for now; inspector.js is the built-in
- * hover inspector. Both are optional: the menu reports a missing file. */
-static void injectVConsole(AgaveWebView* view)
-{
-    /* The page realm has an AMD `define` (prelude's loader), so the UMD bundle
-     * registers itself as the module "VConsole" instead of setting
-     * window.VConsole. The launcher is appended to the bundle and evaluated in
-     * the same script, so registration has already happened when it runs;
-     * instantiate once so clicking the menu twice does not stack panels. */
-    injectScriptAsset(view, "vconsole.min.js", NULL,
-        "(function () {"
-        " var VC = window.VConsole ||"
-        "   (typeof require === 'function' ? require('VConsole') : null);"
-        " if (typeof VC !== 'function' || window.__agaveVConsole) return;"
-        " try { window.__agaveVConsole = new VC(); }"
-        " catch (e) {"
-        "  if (window.console && console.error)"
-        "   console.error('[vconsole] ' + (e && e.message));"
-        " }"
-        "})();");
-}
-
-static void injectInspector(AgaveWebView* view)
-{
-    injectScriptFile(view, "inspector.js", "AGB_INSPECTOR");
+    return injectScriptAsset(view, fileName, envName, NULL, embeddedId);
 }
 
 /* ------------------------------------------------------------------------- */
 /* host-side inspect marker                                                  */
 /* ------------------------------------------------------------------------- */
 
-/* The page half (assets/inspect.js) only reports the target's viewport rect; the
- * box is painted by ui_inspect.c in a click-through child window above the
- * webview. Nothing is inserted into the page, so the document's size - and
- * therefore the scrollbars - cannot change. */
+/* The page half (inspect.js, embedded in the exe) only reports the target's
+ * viewport rect; the box is painted by ui_inspect.c in a click-through child
+ * window above the webview. Nothing is inserted into the page, so the
+ * document's size - and therefore the scrollbars - cannot change. */
 static void inspectEnsure(void)
 {
     if (g_inspectReady || !g_hwnd)
@@ -6498,7 +6526,7 @@ static void probeOnMessage(AgaveWebView* view, const char* message, void* user)
         return;
     }
 
-    /* Host-marker reports (assets/inspect.js). Headless runs use this line as
+    /* Host-marker reports (inspect.js, embedded). Headless runs use this line as
      * the regression signal: the page half is provable without any window. */
     if (message && !strncmp(message, "__agb_inspect__", 15)) {
         probePrint("[inspect]", message + 15);
@@ -7309,15 +7337,9 @@ static int probeRun(const char* url)
                 if (g_probeInject[0] && !g_probeInjectDone) {
                     g_probeInjectDone = 1;
                     probePrint("[probe]", "injecting script");
-                    /* The names go through the same functions the menus call, so
-                     * a probe covers the real injection path (including the
-                     * vConsole instantiation step). */
-                    if (!strcmp(g_probeInject, "vconsole"))
-                        injectVConsole(g_probeView);
-                    else if (!strcmp(g_probeInject, "inspector"))
-                        injectInspector(g_probeView);
-                    else
-                        injectScriptFile(g_probeView, g_probeInject, NULL);
+                    /* inspect.js resolves to the copy embedded in the exe; any
+                     * other name is a file next to the exe or in the cwd. */
+                    injectScriptFile(g_probeView, g_probeInject, NULL);
                     SetTimer(g_probeWnd, PROBE_TIMER_EVAL, 250, NULL);
                     continue;
                 }
@@ -7802,10 +7824,9 @@ static void probeUsage(void)
             "  --eval-file  same as --eval, but read the script from a file: the\n"
             "            command line parser treats \" and \\ specially, so any JS\n"
             "            containing string literals belongs in a file\n"
-            "  --inject <name|path>  run a script asset before --eval, exactly like\n"
-            "            the shell menus: \"inspector\" (inspector.js) or \"vconsole\"\n"
-            "            (vconsole.min.js) resolve next to the exe, anything else is\n"
-            "            a file path (next to the exe first, then the cwd)\n"
+            "  --inject <path>  run a script file before --eval (next to the exe\n"
+            "            first, then the cwd); \"inspect.js\" uses the copy built\n"
+            "            into the exe\n"
             "  --wait    settle time after 'load finished' before eval (default 3000)\n"
             "  --wait-dcl  arm --eval at DOMContentLoaded instead of load, and count\n"
             "            --wait from there (a mark from prelude.js; without an explicit\n"

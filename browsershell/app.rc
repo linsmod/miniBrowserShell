@@ -3,3 +3,9 @@
 /* Shell / executable icon. The same ID is used by registerShellWindowClass()
  * in main.c so the title bar, Alt+Tab and taskbar all pick it up. */
 101 ICON "app.ico"
+
+/* The page half of the F12 element marker. Embedded so a copy of the exe works
+ * without any files next to it (main.c reads it with FindResource). A file
+ * named inspect.js next to the exe still wins, which keeps the script editable
+ * while developing it. */
+201 RCDATA "assets/inspect.js"

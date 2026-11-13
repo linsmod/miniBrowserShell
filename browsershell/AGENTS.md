@@ -32,7 +32,7 @@ MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webv
 |---|---|
 | `tools/probe.ps1` | headless 探针：`-Url -Eval -EvalFile -Inject -Wait -Settle -Timeout [-PassThru]` |
 | `tools/screenshot.ps1` | headless 截图：`--probe --shot [-Rect x,y,w,h]` |
-| `tools/inspect-check.ps1` | 元素标记（inspect）页面半边的回归：注入 `assets/inspect.js`，断言上报的 rect |
+| `tools/inspect-check.ps1` | 元素标记（inspect）页面半边的回归：注入内嵌的 `inspect.js`（exe 旁同名文件可覆盖），断言上报的 rect |
 | `tools/inspect_hang.ps1` | 卡死时挂 cdb 抓全部线程栈（只读，摘下后恢复） |
 | `tools/layered-dib-check.ps1` | 验证 `UpdateLayeredWindow` 的硬性条件：源 DC 里必须还选中着那块 DIB（未选中 → 失败 err=31） |
 | `tools/settings-check.ps1` | `minishell://settings` 的双向协议回归：页面请求 → 宿主回值 → 断言主题/搜索引擎/缩放/版本/下载目录都到位 |
@@ -57,7 +57,7 @@ MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webv
   否则强制代理网络下所有导航静默无响应。
 - 首次导航提交前不能 `mbReload`（会丢掉在途加载且不重发）。
 - 引擎与宿主的 `on_message` 回调在 blink 线程，必须 `postEvent` 到自己窗口再在 UI 线程处理。
-- 页面里的覆盖层（inspector.js 那类）会撑出滚动条；元素标记改由宿主窗口绘制（`ui_inspect.c`），
+- 页面里的覆盖层会撑出滚动条；元素标记改由宿主窗口绘制（`ui_inspect.c`），
   页面只上报 `getBoundingClientRect()`。标记窗口只画那个框，元素信息显示在左下角状态气泡
   （`updateStatus`）：贴着元素画标签会被元素自身尺寸裁掉，1x1 的元素等于什么都看不到。
 - **`mbSetZoomFactor(f)` 会把缩放画两次**：实测 40 CSS px 的条在 125% 屏上，f=1.25 时
