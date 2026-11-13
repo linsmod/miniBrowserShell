@@ -6006,7 +6006,8 @@ static void applyEditFonts(void)
 
 /* Native window frame: keep WS_THICKFRAME | WS_CAPTION and let DWM draw the
  * shadow/rounded frame, while WM_NCCALCSIZE gives the client the whole window
- * rectangle. DwmExtendFrameIntoClientArea(1,1,1,1) keeps the shadow; the
+ * rectangle. The DWM frame is not extended into the client (an extended band is
+ * what showed as a transparent edge on a maximized custom-frame window); the
  * Win11 corner preference rounds the top; DWMWA_BORDER_COLOR is set to "none"
  * so the light-mode 1px frame border cannot show as a white rim. No caption
  * dark/light color is forced here. */
@@ -6025,7 +6026,7 @@ static void applyWindowFrame(ShellWindow* win)
 /* Chromium's maximized custom frame also clips the window region to the
  * monitor work area (ResetWindowRegion). Maximized window rects overscan the
  * work area by the invisible frame thickness; the region keeps the DWM frame
- * and the 1px top border outside the visible surface. Restored windows have
+ * outside the visible surface. Restored windows have
  * no region (the full window rect is client). */
 static void updateWindowRegion(HWND hwnd)
 {
@@ -6273,8 +6274,9 @@ static LRESULT CALLBACK shellProcInner(HWND hwnd, UINT message, WPARAM wParam, L
 
     /* Chrome-style frame: the client area covers the whole window, so the tab
      * strip is the title bar. WS_THICKFRAME | WS_CAPTION stay (shadow, snap,
-     * resize semantics); DwmExtendFrameIntoClientArea(1,1,1,1) keeps a 1px
-     * frame margin for the shadow while WM_NCCALCSIZE paints over it. */
+     * resize semantics); the DWM frame is not extended into the client, so
+     * there is no frame band that a maximized window could expose over the
+     * shell. WM_NCCALCSIZE paints over the NC area. */
     case WM_NCCALCSIZE:
         if (wParam) {
             NCCALCSIZE_PARAMS* params = (NCCALCSIZE_PARAMS*)lParam;
@@ -6554,7 +6556,7 @@ static LRESULT CALLBACK shellProcInner(HWND hwnd, UINT message, WPARAM wParam, L
 
         /* Leave ptMaxSize/ptMaxPosition alone (DefWindowProc's default): a
          * normal maximized window overscans the work area by the invisible
-         * frame thickness, which keeps the DWM 1px frame off-screen. Pinning
+         * frame thickness, which keeps the DWM frame off-screen. Pinning
          * the maximized window to the exact work area exposed that frame as a
          * white line along the top edge. WM_NCCALCSIZE still sets the client
          * to the monitor work area, so the taskbar is not covered. */

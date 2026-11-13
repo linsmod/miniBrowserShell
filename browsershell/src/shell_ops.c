@@ -249,11 +249,9 @@ static void win32_enable_dpi_awareness(void* user)
 }
 
 typedef HRESULT (WINAPI* DwmSetWindowAttributeFn)(HWND, DWORD, LPCVOID, DWORD);
-typedef HRESULT (WINAPI* DwmExtendFrameIntoClientAreaFn)(HWND, const MARGINS*);
 
 typedef struct {
     DwmSetWindowAttributeFn setAttribute;
-    DwmExtendFrameIntoClientAreaFn extendFrame;
     int tried;
 } DwmApi;
 
@@ -269,8 +267,6 @@ static DwmApi* resolveDwmApi(void)
         if (dwm) {
             api.setAttribute = (DwmSetWindowAttributeFn)(void*)GetProcAddress(
                 dwm, "DwmSetWindowAttribute");
-            api.extendFrame = (DwmExtendFrameIntoClientAreaFn)(void*)GetProcAddress(
-                dwm, "DwmExtendFrameIntoClientArea");
         }
     }
 
@@ -278,25 +274,20 @@ static DwmApi* resolveDwmApi(void)
 }
 
 /* Keep WS_THICKFRAME | WS_CAPTION (shadow, resize/snap semantics) but let the
- * chrome paint the whole window: extend the DWM frame 1px into every side for
- * the shadow, round the Win11 corners, and set DWMWA_BORDER_COLOR to "none" so
- * the light-mode 1px frame border cannot show as a white rim. The caption's
- * dark/light color is deliberately not touched (the caption is client-drawn). */
+ * chrome paint the whole window. The DWM frame is deliberately NOT extended
+ * into the client: any extended band is drawn at the window's outer edge, and a
+ * maximized custom-frame window showed it as a transparent edge over the shell.
+ * Round the Win11 corners and set DWMWA_BORDER_COLOR to "none" so the light-mode
+ * 1px frame border cannot show as a white rim. The caption's dark/light color is
+ * deliberately not touched (the caption is client-drawn). */
 static int win32_prepare_frame(void* user, void* hwnd)
 {
     DwmApi* api = resolveDwmApi();
-    int extended = 0;
 
     (void)user;
 
     if (!hwnd)
         return 0;
-
-    if (api->extendFrame) {
-        MARGINS margins = { 1, 1, 1, 1 };
-
-        extended = SUCCEEDED(api->extendFrame((HWND)hwnd, &margins)) ? 1 : 0;
-    }
 
     if (api->setAttribute) {
         int corner = 2;              /* DWMWCP_ROUND */
@@ -316,7 +307,7 @@ static int win32_prepare_frame(void* user, void* hwnd)
         api->setAttribute((HWND)hwnd, 3u, &noTransitions, sizeof(noTransitions));
     }
 
-    return extended;
+    return 0;
 }
 
 static int win32_message_box(void* user, void* parent, const char* text,
