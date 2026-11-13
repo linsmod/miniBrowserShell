@@ -137,6 +137,7 @@ typedef struct {
     int    slide_count;             /* used tabs after the close */
     int    slide_fill;              /* model index that takes the closed slot */
     int    slide_closed_w;          /* width of the closed tab (inherited by fill) */
+    int    slide_closed_right;      /* right edge of the closed tab (grow target) */
     int    slide_w[UI_MAX_TABS];    /* tab width per model index before the close */
 } UiTabStrip;
 

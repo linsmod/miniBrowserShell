@@ -495,15 +495,34 @@ void uiTabStripLayout(UiTabStrip* strip, const UiTheme* theme,
     }
 
     /* A frozen row whose hole is at the right edge has nothing to slide into
-     * it. When the tabs are compressed there is room to grow: fill the strip
-     * again, which puts the last remaining tab's chip back under the pointer so
-     * closing continues to the left. The result becomes the new frozen layout
-     * (the slide itself stays on until the pointer leaves the strip). */
-    expand = sliding && strip->slide_fill < 0 && compressed;
+     * it. Grow the remaining tabs just enough that the row ends where the
+     * closed tab ended (the closed tab's right edge = where its X was), so the
+     * last remaining tab's chip lands under the pointer and closing continues
+     * to the left. Blank space that was already on the right of the closed tab
+     * stays; the growth is never taken from it. Natural-width tabs cannot grow
+     * past tab_max_w, where the row simply keeps its geometry. The result
+     * becomes the new frozen layout (the slide stays on until the pointer
+     * leaves the strip). */
+    expand = sliding && strip->slide_fill < 0;
+
+    if (expand) {
+        /* available counts slot widths including the last gap, while the row
+         * ends one gap before start + available. */
+        int expand_avail = strip->slide_closed_right - (area.x + pad + plus + gap) + gap;
+        int max_avail = visible * (theme->tab_max_w + gap) - gap;
+
+        /* Growth is only fine while it stays within the natural width; the
+         * pointer cannot be reached without exceeding it, so leave the row (and
+         * its blank) alone. */
+        if (expand_avail < 1 || expand_avail > max_avail)
+            expand = 0;
+        else
+            available = expand_avail;   /* the distribution fills exactly this */
+    }
 
     if (sliding && !expand) {
         /* slot[] is already filled from the frozen widths. */
-    } else if (compressed) {
+    } else if (compressed || expand) {
         /* Every item costs its minimum width plus one gap; an active tab costs
          * 20 more than a background one (tab_active_min_w - tab_min_w). Taking
          * that off the width up front turns the capacity question into a single
@@ -614,8 +633,8 @@ void uiTabStripLayout(UiTabStrip* strip, const UiTheme* theme,
     strip->count = visible;
 
     if (expand) {
-        /* The expanded row is the new reference for the next close in this
-         * slide (the pointer now sits on the last remaining tab's chip). */
+        /* The grown row is the new reference for the next close in this slide
+         * (the pointer now sits on the last remaining tab's chip). */
         for (i = 0; i < UI_MAX_TABS; ++i)
             strip->slide_w[i] = strip->tab[i].w;
 
@@ -680,6 +699,9 @@ void uiTabStripSlideAfterClose(UiTabStrip* strip, int closed, int fill)
     strip->slide_fill = fill;
     strip->slide_closed_w = (closed >= 0 && closed < UI_MAX_TABS)
                                 ? strip->tab[closed].w : 0;
+    strip->slide_closed_right = (closed >= 0 && closed < UI_MAX_TABS)
+                                    ? strip->tab[closed].x + strip->tab[closed].w
+                                    : 0;
     strip->slide_count = strip->total - 1;   /* after the close */
     strip->slide = 1;
 }
@@ -1093,3 +1115,4 @@ void uiTabStripLeave(UiTabStrip* strip)
     strip->pressed_new_tab = 0;
     strip->pressed_search = 0;
 }
+
