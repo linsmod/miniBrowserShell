@@ -39,6 +39,7 @@ MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webv
 | `tools/zoom-check.ps1` | 页面缩放真的放大页面：每个 zoom 的着色高度 = 40px × zoom × 显示缩放，右边缘不被裁；dpr/innerWidth 仍按显示缩放 |
 | `tools/dlserver.ps1` | 下载/新窗口回归用的本地 HTTP 服务 |
 | `tools/hangserver.ps1` | 只 accept 不响应的 TCP 服务，用来触发"加载永不提交"和导航守卫 |
+| `tools/navguard-check.ps1` | 导航守卫销毁在途控件（请求随后失败）不再把引擎带崩：隐藏壳 + 6 秒后关闭服务端，12 秒仍存活 |
 
 崩溃链路（报告 → 崩溃页）可以 headless 验证，不要开窗口：
 `AGB_TEST_CRASH=1 AGB_CRASH_POPUP=0` 只写 `agb_crash.txt`；
