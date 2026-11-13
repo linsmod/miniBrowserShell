@@ -28,8 +28,8 @@ $before = if (Test-Path $log) { (Get-Content $log).Count } else { 0 }
 
 $env:AGB_SHELL_HIDDEN = '1'
 $env:AGB_TEST_CLOSE_TAB_MS = '900'
-$env:AGB_TEST_CLOSE_CHIP = '1'
-$env:AGB_TEST_EXTRA_TABS = '2'
+$env:AGB_TEST_CLOSE_CHIP = '3'
+$env:AGB_TEST_EXTRA_TABS = '3'
 $shell = Start-Process -FilePath $exe `
     -ArgumentList @('--userdata', (Join-Path $work 'profile'),
                     ('file:///' + ($page -replace '\\', '/'))) `
@@ -63,8 +63,8 @@ try {
         'FAIL: the test did not close a tab'
         exit 1
     }
-    if ($frozen.Count -eq 0) {
-        'FAIL: closing on the X did not freeze the tab widths'
+    if ($frozen.Count -lt 3) {
+        'FAIL: the slide did not survive three closes in a row'
         $lines | Select-Object -Last 12 | ForEach-Object { "  $_" }
         exit 1
     }
@@ -81,3 +81,4 @@ try {
     Remove-Item Env:AGB_SHELL_HIDDEN, Env:AGB_TEST_CLOSE_TAB_MS, Env:AGB_TEST_CLOSE_CHIP, Env:AGB_TEST_EXTRA_TABS -ErrorAction SilentlyContinue
     Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 }
+

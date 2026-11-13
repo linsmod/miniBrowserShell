@@ -655,6 +655,8 @@ void uiTabStripSlideAfterClose(UiTabStrip* strip, int closed, int fill)
     for (i = 0; i < UI_MAX_TABS; ++i)
         strip->slide_w[i] = strip->tab[i].w;
 
+    /* fill < 0: nothing to the right; the remaining row simply keeps its widths
+     * (the freeze is still on, so nothing re-flows until the pointer leaves). */
     strip->slide_fill = fill;
     strip->slide_closed_w = (closed >= 0 && closed < UI_MAX_TABS)
                                 ? strip->tab[closed].w : 0;

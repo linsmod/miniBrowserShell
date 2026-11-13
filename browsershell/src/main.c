@@ -1468,6 +1468,18 @@ static int anyTabOpen(void)
     return 0;
 }
 
+static int countUsedTabs(void)
+{
+    int i;
+    int count = 0;
+
+    for (i = 0; i < MAX_TABS; ++i)
+        if (g_tabs[i].used)
+            ++count;
+
+    return count;
+}
+
 static int nextUsedTab(int index)
 {
     int i;
@@ -1483,6 +1495,7 @@ static int nextUsedTab(int index)
  * close-slide checks substitute the client position here. */
 static int   g_testCursorSet;
 static POINT g_testCursor;
+static int   g_testCloseLeft;   /* repeated fake X-clicks still to do */
 
 static int shellCursorClient(HWND hwnd, POINT* point)
 {
@@ -1569,13 +1582,18 @@ static void closeTab(int index)
      * teardown: the strip still has the pre-close geometry. */
     fill = nextUsedTab(index);
 
-    slide = pointerOnCloseChip(index) && fill >= 0 &&
-            CHROME->tabstrip.count == CHROME->tabstrip.total;
-
-    if (slide)
+    if (uiChromeCloseSliding(CHROME) ||
+        (pointerOnCloseChip(index) && fill >= 0 &&
+         CHROME->tabstrip.count == CHROME->tabstrip.total)) {
+        /* An active slide keeps going (even when this close leaves nothing on
+         * the right) until the pointer leaves the tab host; a fresh one only
+         * starts on a close-chip click with a tab to slide into the hole. */
         uiChromeBeginCloseSlide(CHROME, index, fill);
-    else
+        slide = uiChromeCloseSliding(CHROME);
+    } else {
         uiChromeEndCloseSlide(CHROME);
+        slide = 0;
+    }
 
     tabClearIcon(&g_tabs[index]);
 
@@ -6267,22 +6285,42 @@ static LRESULT CALLBACK shellProcInner(HWND hwnd, UINT message, WPARAM wParam, L
         }
 
         if (wParam == TEST_CLOSE_TAB_TIMER) {
+            const char* chip = getenv("AGB_TEST_CLOSE_CHIP");
+
             KillTimer(hwnd, TEST_CLOSE_TAB_TIMER);
-            agbLog(AGB_LOG_SHELL, "test: closing the active tab (fetch may be in flight)");
 
-            /* AGB_TEST_CLOSE_CHIP: act like a click that landed on that tab's
-             * own close chip. The real pointer is never moved. */
-            if (getenv("AGB_TEST_CLOSE_CHIP") &&
-                CHROME->tabstrip.close[g_activeTab].w > 0) {
-                UiRect chip = CHROME->tabstrip.close[g_activeTab];
+            if (chip && chip[0]) {
+                /* Synthetic "click on the active tab's X", repeatable: the slide
+                 * must survive several closes in a row. The real pointer is
+                 * never moved. */
+                int left = g_testCloseLeft > 0 ? g_testCloseLeft : atoi(chip);
 
-                g_testCursor.x = chip.x + chip.w / 2;
-                g_testCursor.y = chip.y + chip.h / 2;
-                g_testCursorSet = 1;
-                agbLog(AGB_LOG_SHELL, "test: fake cursor on close chip %d,%d",
-                       g_testCursor.x, g_testCursor.y);
+                if (left < 1)
+                    left = 1;
+
+                if (CHROME->tabstrip.close[g_activeTab].w > 0) {
+                    UiRect chipRect = CHROME->tabstrip.close[g_activeTab];
+
+                    g_testCursor.x = chipRect.x + chipRect.w / 2;
+                    g_testCursor.y = chipRect.y + chipRect.h / 2;
+                    g_testCursorSet = 1;
+                    agbLog(AGB_LOG_SHELL, "test: fake cursor on close chip %d,%d",
+                           g_testCursor.x, g_testCursor.y);
+                }
+
+                agbLog(AGB_LOG_SHELL, "test: closing tab %d from its X", g_activeTab);
+                closeTab(g_activeTab);
+
+                g_testCloseLeft = --left;
+
+                if (left > 0 && countUsedTabs() > 1)
+                    SetTimer(hwnd, TEST_CLOSE_TAB_TIMER, 400, NULL);
+                else
+                    SetTimer(hwnd, TEST_SLIDE_END_TIMER, 400, NULL);
+                return 0;
             }
 
+            agbLog(AGB_LOG_SHELL, "test: closing the active tab (fetch may be in flight)");
             closeTab(g_activeTab);
 
             if (g_testCursorSet)
@@ -10535,6 +10573,36 @@ static int uiShotMain(void)
                      chrome.tabstrip.tab[4].x - x3 >= -1));
 
             uiChromeEndCloseSlide(&chrome);
+        }
+
+        /* A rightmost close while the slide is already on: nothing slides into
+         * the hole, the remaining row keeps its widths, and the freeze stays
+         * until the pointer leaves (no re-flow here). */
+        {
+            int i, w_before[4], x_before[4];
+
+            shotFillModel(&chrome.model);
+            uiChromeLayout(&chrome, 1100, 760);
+
+            for (i = 0; i < 4; ++i) {
+                w_before[i] = chrome.tabstrip.tab[i].w;
+                x_before[i] = chrome.tabstrip.tab[i].x;
+            }
+
+            uiChromeBeginCloseSlide(&chrome, 4, -1);
+            chrome.model.tabs[4].used = 0;
+            uiChromeLayout(&chrome, 1100, 760);
+
+            uiCheck("close-slide-last-kept",
+                    uiChromeCloseSliding(&chrome) == 1 &&
+                    chrome.tabstrip.tab[0].x == x_before[0] &&
+                    chrome.tabstrip.tab[3].x == x_before[3] &&
+                    chrome.tabstrip.tab[3].w == w_before[3]);
+
+            uiChromeEndCloseSlide(&chrome);
+            uiChromeLayout(&chrome, 1100, 760);
+            uiCheck("close-slide-last-refilled",
+                    chrome.tabstrip.tab[0].w > w_before[0]);
         }
     }
 
