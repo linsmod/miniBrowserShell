@@ -33,6 +33,9 @@ probeExit('theme=' + theme + '|search=' + search + '|zoom=' + zoom +
           '|downloads=' + document.getElementById('downloads').textContent +
           '|scale=' + document.getElementById('scale').textContent +
           '|dpi=' + document.getElementById('dpi').textContent +
+          '|profile=' + document.getElementById('profile').textContent +
+          '|profileSection=' + (document.getElementById('profile').closest('section')
+                                .querySelector('h2').textContent) +
           '|project=' + document.getElementById('project').textContent +
           '|engine=' + document.getElementById('engine').textContent +
           '|enginehash=' + document.getElementById('enginehash').textContent +
@@ -68,6 +71,12 @@ if ($fields['search'] -notin @('baidu', 'bing', 'google', 'duckduckgo')) { $prob
 if ($fields['zoom'] -notmatch '^(75|90|100|110|125|150)$') { $problems += "zoom='$($fields['zoom'])'" }
 if ($fields['restore'] -notin @('true', 'false')) { $problems += "restore='$($fields['restore'])'" }
 if (-not $fields['version']) { $problems += 'version is empty (host never answered)' }
+# Shell and engine are separate products: the shell row must not carry the
+# engine's name, and the profile folder belongs to Data, not About.
+if ($fields['version'] -match 'miniblink') { $problems += "shell version mentions the engine: '$($fields['version'])'" }
+if ($fields['version'] -notmatch ', built ') { $problems += "shell version has no build time: '$($fields['version'])'" }
+if (-not $fields['profile']) { $problems += 'profile is empty' }
+if ($fields['profileSection'] -ne 'Data') { $problems += "profile lives in '$($fields['profileSection'])' instead of Data" }
 if (-not $fields['downloads']) { $problems += 'downloads is empty (host never answered)' }
 if ($fields['ddOpen'] -ne 'true') { $problems += "dropdown did not open on the first click (ddOpen='$($fields['ddOpen'])')" }
 if ($fields['ddPick'] -ne 'bing') { $problems += "dropdown pick did not stick (ddPick='$($fields['ddPick'])')" }

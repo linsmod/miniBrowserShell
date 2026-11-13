@@ -4419,7 +4419,10 @@ static void settingsSendAll(AgaveWebView* view)
         settingsSend(view, "dpi", text);
     }
 
-    _snprintf(text, sizeof(text), "miniblink 132 %s, built %s",
+    /* Shell only: the engine has its own rows right below (version, SHA-256).
+     * "miniblink 132" used to be glued to the shell build, which read as one
+     * product. */
+    _snprintf(text, sizeof(text), "%s, built %s",
               buildInfoShellVersion(), buildInfoShellBuild());
     settingsSend(view, "version", text);
 
@@ -4508,6 +4511,13 @@ static void settingsAction(AgaveWebView* view, const char* action)
 
         if (shellOps()->downloads_dir(NULL, dir, sizeof(dir))) {
             agbLog(AGB_LOG_SHELL, "settings: open downloads %s", dir);
+            ShellExecuteA(NULL, "open", dir, NULL, NULL, SW_SHOWNORMAL);
+        }
+    } else if (action && !strcmp(action, "open-profile")) {
+        char dir[MAX_PATH_CHARS];
+
+        if (shellOps()->profile_root(NULL, dir, sizeof(dir))) {
+            agbLog(AGB_LOG_SHELL, "settings: open profile %s", dir);
             ShellExecuteA(NULL, "open", dir, NULL, NULL, SW_SHOWNORMAL);
         }
     }

@@ -48,6 +48,8 @@ try {
     $text = Get-Content $report -Raw
     $problems = @()
 
+    if ($text -notmatch 'Shell\s+MiniShell [^\r\n]+, built') { $problems += 'shell version/build missing' }
+    if ($text -notmatch 'Engine\s+mb132_x64\.dll ') { $problems += 'engine version missing' }
     if ($text -notmatch 'Engine hash SHA-256 [0-9a-f]{64}') { $problems += 'engine SHA-256 missing' }
     if ($text -notmatch 'Project\s+https://github\.com/linsmod/miniBrowserShell') { $problems += 'project URL missing' }
     if ($text -notmatch 'Launch\r?\n------\r?\nargs\s+') { $problems += 'launch args missing' }
