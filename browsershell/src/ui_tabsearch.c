@@ -400,6 +400,7 @@ static void tsRender(void)
     int y;
     int i;
     int list_bottom;
+    int list_top;
     int reserve;
 
     if (!g_ts.hwnd || !theme)
@@ -488,10 +489,16 @@ static void tsRender(void)
 
     /* Rows, scrolled; anything outside the panel is skipped. The scrollbar
      * takes a strip on the right, so rows leave that space free. */
-    list_bottom = TS_MARGIN + height - TS_MARGIN;
+    list_bottom = height - TS_MARGIN;
+    list_top = y;
     g_ts.content_h = tsListHeight();
 
     reserve = tsScrollReserve();
+
+    /* A scrollbar drag can leave scroll_y between rows; clip the rows to the
+     * list viewport so a half-visible row cannot paint over the search field. */
+    GdipSetClipRectI(painter.g, TS_MARGIN, list_top, g_ts.width,
+                     list_bottom - list_top, CombineModeReplace);
 
     for (i = 0; i < g_ts.row_count; ++i) {
         TsRow* row = &g_ts.rows[i];
@@ -499,7 +506,10 @@ static void tsRender(void)
                                                : tsScale(TS_ROW_H);
         int top = y - g_ts.scroll_y;
 
-        if (top + row_h <= y || top >= list_bottom) {
+        /* Visibility is relative to the list viewport, not to the running y:
+         * comparing with y skipped every row once scroll_y reached one row
+         * height, so the list went blank after the first wheel notch. */
+        if (top + row_h <= list_top || top >= list_bottom) {
             y += row_h;
             continue;
         }
@@ -555,6 +565,8 @@ static void tsRender(void)
 
         y += row_h;
     }
+
+    GdipResetClip(painter.g);
 
     if (tsScrollbarVisible()) {
         UiRect track = tsScrollTrack();
