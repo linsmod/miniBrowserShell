@@ -374,6 +374,7 @@ void uiTabStripLayout(UiTabStrip* strip, const UiTheme* theme,
     int active_exists;
     int compressed;
     int sliding;
+    int expand;
     int x;
     int tab_y;
     int available;
@@ -493,7 +494,14 @@ void uiTabStripLayout(UiTabStrip* strip, const UiTheme* theme,
             strip->slide = 0;   /* stale: this layout is the normal one */
     }
 
-    if (sliding) {
+    /* A frozen row whose hole is at the right edge has nothing to slide into
+     * it. When the tabs are compressed there is room to grow: fill the strip
+     * again, which puts the last remaining tab's chip back under the pointer so
+     * closing continues to the left. The result becomes the new frozen layout
+     * (the slide itself stays on until the pointer leaves the strip). */
+    expand = sliding && strip->slide_fill < 0 && compressed;
+
+    if (sliding && !expand) {
         /* slot[] is already filled from the frozen widths. */
     } else if (compressed) {
         /* Every item costs its minimum width plus one gap; an active tab costs
@@ -604,6 +612,18 @@ void uiTabStripLayout(UiTabStrip* strip, const UiTheme* theme,
 
     strip->total = total;
     strip->count = visible;
+
+    if (expand) {
+        /* The expanded row is the new reference for the next close in this
+         * slide (the pointer now sits on the last remaining tab's chip). */
+        for (i = 0; i < UI_MAX_TABS; ++i)
+            strip->slide_w[i] = strip->tab[i].w;
+
+        strip->slide_fill = -1;
+        strip->slide_closed_w = 0;
+        strip->slide_count = total;
+        strip->slide = 1;
+    }
 
     /* Compressed: `x` is exactly the fixed right edge, so the clamp below is a
      * no-op. Natural width: the "+" follows the last tab (Chrome) and the clamp

@@ -10575,14 +10575,45 @@ static int uiShotMain(void)
             uiChromeEndCloseSlide(&chrome);
         }
 
-        /* A rightmost close while the slide is already on: nothing slides into
-         * the hole, the remaining row keeps its widths, and the freeze stays
-         * until the pointer leaves (no re-flow here). */
+        /* Right-edge close while the tabs are compressed: the row fills the
+         * strip again, so the last remaining tab's chip returns to the pointer
+         * and the next close walks left. */
+        {
+            int cursor_x, before_w;
+
+            shotFillModel(&chrome.model);
+            uiChromeLayout(&chrome, 340, 300);
+
+            cursor_x = chrome.tabstrip.close[4].x;
+            before_w = chrome.tabstrip.tab[0].w;
+
+            uiChromeBeginCloseSlide(&chrome, 4, -1);
+            chrome.model.tabs[4].used = 0;
+            uiChromeLayout(&chrome, 340, 300);
+
+            uiCheck("close-slide-expand-chip",
+                    uiChromeCloseSliding(&chrome) == 1 &&
+                    chrome.tabstrip.close[3].x == cursor_x &&
+                    chrome.tabstrip.tab[0].w > before_w);
+
+            uiChromeBeginCloseSlide(&chrome, 3, -1);
+            chrome.model.tabs[3].used = 0;
+            uiChromeLayout(&chrome, 340, 300);
+
+            uiCheck("close-slide-expand-again",
+                    chrome.tabstrip.close[2].x == cursor_x);
+
+            uiChromeEndCloseSlide(&chrome);
+            uiChromeLayout(&chrome, 340, 300);
+        }
+
+        /* Right-edge close with natural-width tabs: nothing can grow, so the
+         * row keeps its widths and the freeze simply holds. */
         {
             int i, w_before[4], x_before[4];
 
             shotFillModel(&chrome.model);
-            uiChromeLayout(&chrome, 1100, 760);
+            uiChromeLayout(&chrome, 1600, 760);
 
             for (i = 0; i < 4; ++i) {
                 w_before[i] = chrome.tabstrip.tab[i].w;
@@ -10591,7 +10622,7 @@ static int uiShotMain(void)
 
             uiChromeBeginCloseSlide(&chrome, 4, -1);
             chrome.model.tabs[4].used = 0;
-            uiChromeLayout(&chrome, 1100, 760);
+            uiChromeLayout(&chrome, 1600, 760);
 
             uiCheck("close-slide-last-kept",
                     uiChromeCloseSliding(&chrome) == 1 &&
@@ -10600,9 +10631,6 @@ static int uiShotMain(void)
                     chrome.tabstrip.tab[3].w == w_before[3]);
 
             uiChromeEndCloseSlide(&chrome);
-            uiChromeLayout(&chrome, 1100, 760);
-            uiCheck("close-slide-last-refilled",
-                    chrome.tabstrip.tab[0].w > w_before[0]);
         }
     }
 
