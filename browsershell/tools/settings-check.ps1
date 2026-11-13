@@ -45,6 +45,17 @@ probeExit('theme=' + theme + '|search=' + search + '|zoom=' + zoom +
           '|rowShown=' + rowShown +
           '|pagesText=' + ta.value.split('\n').join(',') +
           '|version=' + document.getElementById('version').textContent +
+          '|versionBuilt=' + document.getElementById('versionBuilt').textContent +
+          '|versionHref=' + document.getElementById('versionLink').href +
+          '|versionTag=' + document.getElementById('versionLink').tagName +
+          /* The link and the build time must stay on one line: the About cell
+           * is right-aligned and 460px wide. Compare the text boxes (the <a>
+           * inline box is taller than the <code> it wraps). */
+          '|versionLine=' + (function(){var a=document.getElementById('version')
+               .getBoundingClientRect(),
+               b=document.getElementById('versionBuilt').getBoundingClientRect();
+               return (a.width>0&&Math.abs(a.top-b.top)<=2)?1:0;})() +
+          '|versionColor=' + getComputedStyle(document.getElementById('version')).color +
           '|downloads=' + document.getElementById('downloads').textContent +
           '|scale=' + document.getElementById('scale').textContent +
           '|dpi=' + document.getElementById('dpi').textContent +
@@ -116,7 +127,28 @@ if (-not $fields['version']) { $problems += 'version is empty (host never answer
 # Shell and engine are separate products: the shell row must not carry the
 # engine's name, and the profile folder belongs to Data, not About.
 if ($fields['version'] -match 'miniblink') { $problems += "shell version mentions the engine: '$($fields['version'])'" }
-if ($fields['version'] -notmatch ', built ') { $problems += "shell version has no build time: '$($fields['version'])'" }
+if ($fields['versionBuilt'] -notmatch '^, built ') { $problems += "shell build time missing: '$($fields['versionBuilt'])'" }
+# The version half links to GitHub: a short hash goes to its commit page, a tag
+# (or "unknown") only to the project, and the build time stays plain text.
+if ($fields['versionTag'] -ne 'A') { $problems += "version is not a link (tag='$($fields['versionTag'])')" }
+$projectUrl = 'https://github.com/linsmod/miniBrowserShell'
+if ($fields['versionHref'] -notlike "$projectUrl*") { $problems += "version link='$($fields['versionHref'])'" }
+$local = $fields['version'] -replace '-dirty$', ''
+if ($local -match '^[0-9a-f]{6,}$') {
+    if ($fields['versionHref'] -ne "$projectUrl/commit/$local") {
+        $problems += "version link='$($fields['versionHref'])' instead of the commit page"
+    }
+} elseif ($fields['versionHref'] -ne $projectUrl) {
+    $problems += "non-hash version '$local' links to '$($fields['versionHref'])' instead of the project"
+}
+if ($fields['versionLine'] -ne '1') { $problems += 'the version link and its build time are not on one line' }
+# A clickable value must look clickable: the version text uses the accent
+# colour, not the body text colour (checked as a blue-ish rgb in both themes).
+if ($fields['versionColor'] -notmatch '^rgba?\((\d+), (\d+), (\d+)') {
+    $problems += "version colour='$($fields['versionColor'])'"
+} elseif ([int]$Matches[3] - [int]$Matches[1] -lt 40) {
+    $problems += "version colour is not the link accent: '$($fields['versionColor'])'"
+}
 if (-not $fields['profile']) { $problems += 'profile is empty' }
 if ($fields['profileSection'] -ne 'Data') { $problems += "profile lives in '$($fields['profileSection'])' instead of Data" }
 if (-not $fields['downloads']) { $problems += 'downloads is empty (host never answered)' }

@@ -35,7 +35,7 @@ MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webv
 | `tools/inspect-check.ps1` | 元素标记（inspect）页面半边的回归：注入内嵌的 `inspect.js`（exe 旁同名文件可覆盖），断言上报的 rect |
 | `tools/inspect_hang.ps1` | 卡死时挂 cdb 抓全部线程栈（只读，摘下后恢复） |
 | `tools/layered-dib-check.ps1` | 验证 `UpdateLayeredWindow` 的硬性条件：源 DC 里必须还选中着那块 DIB（未选中 → 失败 err=31） |
-| `tools/settings-check.ps1` | `minishell://settings` 的双向协议回归：页面请求 → 宿主回值 → 断言主题/搜索引擎/缩放/版本/下载目录都到位 |
+| `tools/settings-check.ps1` | `minishell://settings` 的双向协议回归：页面请求 → 宿主回值 → 断言主题/搜索引擎/缩放/版本/下载目录都到位；版本半段是指向 GitHub commit 的链接（tag/unknown 退到项目页，`-dirty` 不进 URL），链接用强调色、和构建时间同一行 |
 | `tools/zoom-check.ps1` | 页面缩放真的放大页面：每个 zoom 的着色高度 = 40px × zoom × 显示缩放，右边缘不被裁；dpr/innerWidth 仍按显示缩放 |
 | `tools/dlserver.ps1` | 下载/新窗口回归用的本地 HTTP 服务 |
 | `tools/hangserver.ps1` | 只 accept 不响应的 TCP 服务，用来触发"加载永不提交"和导航守卫 |

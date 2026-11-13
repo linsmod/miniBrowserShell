@@ -5265,6 +5265,9 @@ static void settingsSendAll(AgaveWebView* view)
     _snprintf(text, sizeof(text), "%s, built %s",
               buildInfoShellVersion(), buildInfoShellBuild());
     settingsSend(view, "version", text);
+    /* The page makes the version half a link; the host knows the repo and
+     * whether the version is a commit. */
+    settingsSend(view, "commiturl", buildInfoCommitUrl());
 
     /* Identification a bug report needs; the same facts go into the crash
      * report (build_info.c), and the engine hash is the build's fingerprint. */

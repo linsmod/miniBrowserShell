@@ -19,6 +19,11 @@ const char* buildInfoShellBuild(void);
  * tree had changes. Generated at build time into shell_version.h. */
 const char* buildInfoShellVersion(void);
 
+/* Where the About row links to: this commit on GitHub when the version is a
+ * short hash (a "-dirty" build still links to its commit), the project page
+ * otherwise (tag or "unknown"). */
+const char* buildInfoCommitUrl(void);
+
 /* File version of the loaded mb132_x64.dll, or "-". */
 const char* buildInfoEngineVersion(void);
 

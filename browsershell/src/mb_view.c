@@ -2331,6 +2331,12 @@ static const char kSettingsHtml[] =
 ".row+.row{border-top:1px solid var(--line)}"
 ".about-v{max-width:460px;text-align:right}"
 ".about-v code{word-break:break-all}"
+/* The build version is the only thing in About that can be clicked: it links
+ * to the commit on GitHub, so it uses the accent colour (the inner <code>
+ * would otherwise keep the body colour). */
+".about-link,.about-link code{color:var(--accent);text-decoration:none}"
+".about-link:hover code{text-decoration:underline}"
+".about-when{color:var(--muted)}"
 "label.opt{display:inline-flex;align-items:center;gap:6px;margin-right:18px;cursor:pointer}"
 "select{font:inherit;padding:4px 8px;border-radius:6px;border:1px solid var(--line);"
 "background:var(--bg);color:var(--fg)}"
@@ -2422,7 +2428,9 @@ static const char kSettingsHtml[] =
 "<button id=\"openProfile\">Open</button></div></section>"
 
 "<section><h2>About</h2>"
-"<div class=\"row\"><div>Shell</div><div class=\"about-v\"><code id=\"version\"></code></div></div>"
+"<div class=\"row\"><div>Shell</div><div class=\"about-v\"><a id=\"versionLink\" "
+"class=\"about-link\" target=\"_blank\" title=\"Open this commit on GitHub\">"
+"<code id=\"version\"></code></a><code id=\"versionBuilt\" class=\"about-when\"></code></div></div>"
 "<div class=\"row\"><div>Project</div><div class=\"about-v\"><code id=\"project\"></code></div></div>"
 "<div class=\"row\"><div>Engine</div><div class=\"about-v\"><code id=\"engine\"></code></div></div>"
 "<div class=\"row\"><div>Engine SHA-256</div><div class=\"about-v\"><code id=\"enginehash\"></code></div></div>"
@@ -2474,7 +2482,10 @@ static const char kSettingsHtml[] =
 "else if(k==='profile'){document.getElementById('profile').textContent=v;}"
 "else if(k==='scale'){document.getElementById('scale').textContent=v;}"
 "else if(k==='dpi'){document.getElementById('dpi').textContent=v;}"
-"else if(k==='version'){document.getElementById('version').textContent=v;}"
+"else if(k==='version'){var vb=v.indexOf(', built ');"
+"document.getElementById('version').textContent=vb>0?v.slice(0,vb):v;"
+"document.getElementById('versionBuilt').textContent=vb>0?v.slice(vb):'';}"
+"else if(k==='commiturl'){document.getElementById('versionLink').href=v;}"
 "else if(k==='project'){document.getElementById('project').textContent=v;}"
 "else if(k==='engine'){document.getElementById('engine').textContent='mb132_x64.dll '+v;}"
 "else if(k==='enginehash'){document.getElementById('enginehash').textContent=v;}"

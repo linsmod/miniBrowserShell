@@ -107,6 +107,38 @@ const char* buildInfoShellVersion(void)
     return SHELL_COMMIT_VERSION;
 }
 
+/* The About row shows "<version>, built <time>"; the version half is a link to
+ * GitHub. Only a lowercase-hex version is a commit (tags and "unknown" are
+ * not), and "-dirty" is a suffix, not part of the hash. */
+const char* buildInfoCommitUrl(void)
+{
+    static char url[256];
+    static int done;
+    const char* version = SHELL_COMMIT_VERSION;
+    size_t len = 0;
+    int isHash = 1;
+
+    if (done)
+        return url;
+    done = 1;
+
+    for (; version[len] && version[len] != '-'; len++) {
+        char c = version[len];
+
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')))
+            isHash = 0;
+    }
+
+    if (isHash && len >= 6)
+        _snprintf(url, sizeof(url), "%s/commit/%.*s", buildInfoProjectUrl(),
+                  (int)len, version);
+    else
+        _snprintf(url, sizeof(url), "%s", buildInfoProjectUrl());
+
+    url[sizeof(url) - 1] = 0;
+    return url;
+}
+
 const char* buildInfoEngineVersion(void)
 {
     wchar_t path[MAX_PATH];
