@@ -500,9 +500,13 @@ static void paintToolbar(UiChrome* chrome, UiPainter* painter)
     paintAddress(chrome, painter);
     uiButtonPaint(&bar->menu, theme, painter);
 
-    /* A hairline separates the toolbar from the page; progress rides on it. */
-    uiFillRect(painter, uiRectMake(0, bar->rect.y + bar->rect.h - scale(theme, 1),
-                                   bar->rect.w, scale(theme, 1)), theme->border);
+    /* A hairline separates the toolbar from the page; progress rides on it.
+     * Both stop at the page's edges (content is inset by the shell-owned resize
+     * strip): drawn across the full window the hairline cut the vertical border
+     * in two at this corner. */
+    uiFillRect(painter, uiRectMake(chrome->content.x,
+                                   bar->rect.y + bar->rect.h - scale(theme, 1),
+                                   chrome->content.w, scale(theme, 1)), theme->border);
 
     if (CHROME_SHOW_PROGRESS && chrome->model.loading) {
         percent = CLAMP(chrome->model.progress, 0, 100);
@@ -510,8 +514,10 @@ static void paintToolbar(UiChrome* chrome, UiPainter* painter)
         if (percent <= 0)
             percent = 8;
 
-        uiFillRect(painter, uiRectMake(0, bar->rect.y + bar->rect.h - scale(theme, 2),
-                                       bar->rect.w * percent / 100, scale(theme, 2)),
+        uiFillRect(painter, uiRectMake(chrome->content.x,
+                                       bar->rect.y + bar->rect.h - scale(theme, 2),
+                                       chrome->content.w * percent / 100,
+                                       scale(theme, 2)),
                    theme->accent);
     }
 }
