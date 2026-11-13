@@ -645,10 +645,15 @@ static void themePrefSave(void)
 typedef struct {
     int search;    /* 0 Baidu, 1 Bing, 2 Google, 3 DuckDuckGo */
     int zoom;      /* default page zoom for new tabs, percent */
-    int restore;   /* 1 = reopen last session's tabs on startup */
+    int startup;   /* 0 new tab page, 1 continue where you left off,
+                    * 2 open the pages below (Chrome's "On startup") */
+    char pages[8][512];
+    int pageCount;
 } ShellPreferences;
 
-static ShellPreferences g_prefs = { 0, 100, 1 };
+static ShellPreferences g_prefs = { 0, 100, 0 };
+
+#define MAX_STARTUP_PAGES ((int)(sizeof(g_prefs.pages) / sizeof(g_prefs.pages[0])))
 
 static const char* kEngineNames[] = { "baidu", "bing", "google", "duckduckgo" };
 static const char* kEngineLabels[] = { "Baidu", "Bing", "Google", "DuckDuckGo" };
@@ -661,10 +666,76 @@ static const char* kEngineSearch[] = {
 
 #define ENGINE_COUNT ((int)(sizeof(kEngineNames) / sizeof(kEngineNames[0])))
 
+/* trims a URL-ish setting and gives it a scheme when it has none: text without
+ * "://" is taken as a host (https://), which is how users type addresses. The
+ * result is NUL-terminated and never empty when the input was not empty. */
+static void normalizeStartUrl(const char* value, char* out, size_t cap)
+{
+    const char* p = value ? value : "";
+    size_t len;
+
+    if (!out || cap < 2)
+        return;
+
+    while (*p == ' ' || *p == '\t')
+        ++p;
+
+    len = strlen(p);
+    while (len && (p[len - 1] == ' ' || p[len - 1] == '\t' ||
+                   p[len - 1] == '\n' || p[len - 1] == '\r'))
+        --len;
+
+    if (len >= cap)
+        len = cap - 1;
+
+    memcpy(out, p, len);
+    out[len] = 0;
+
+    if (out[0] && !strstr(out, "://") && strncmp(out, "about:", 6)) {
+        char text[512];
+
+        _snprintf(text, sizeof(text), "https://%s", out);
+        text[sizeof(text) - 1] = 0;
+        _snprintf(out, cap, "%s", text);
+        out[cap - 1] = 0;
+    }
+}
+
+/* Appends one "open this page at startup" URL (deduplicated, normalized). */
+static void startupPageAdd(const char* value)
+{
+    char text[512];
+    int i;
+
+    normalizeStartUrl(value, text, sizeof(text));
+    if (!text[0] || g_prefs.pageCount >= MAX_STARTUP_PAGES)
+        return;
+
+    for (i = 0; i < g_prefs.pageCount; ++i) {
+        if (!_stricmp(g_prefs.pages[i], text))
+            return;
+    }
+
+    _snprintf(g_prefs.pages[g_prefs.pageCount], sizeof(g_prefs.pages[0]), "%s", text);
+    g_prefs.pages[g_prefs.pageCount][sizeof(g_prefs.pages[0]) - 1] = 0;
+    ++g_prefs.pageCount;
+}
+
+static void startupPagesClear(void)
+{
+    int i;
+
+    for (i = 0; i < MAX_STARTUP_PAGES; ++i)
+        g_prefs.pages[i][0] = 0;
+
+    g_prefs.pageCount = 0;
+}
+
 static void prefsSave(void)
 {
     char path[MAX_PATH_CHARS];
     FILE* file;
+    int i;
 
     statePath(path, sizeof(path), "prefs.txt");
     file = fopen(path, "wb");
@@ -674,16 +745,26 @@ static void prefsSave(void)
         return;
     }
 
-    fprintf(file, "search=%s\nzoom=%d\nrestore=%d\n",
-            kEngineNames[g_prefs.search], g_prefs.zoom, g_prefs.restore);
+    fprintf(file, "search=%s\nzoom=%d\nstartup=%d\nrestore=%d\n",
+            kEngineNames[g_prefs.search], g_prefs.zoom, g_prefs.startup,
+            g_prefs.startup == 1 ? 1 : 0);
+
+    for (i = 0; i < g_prefs.pageCount; ++i)
+        fprintf(file, "page=%s\n", g_prefs.pages[i]);
+
     fclose(file);
 }
 
 static void prefsLoad(void)
 {
     char path[MAX_PATH_CHARS];
-    char line[256];
+    char line[1200];
     FILE* file;
+    int startupSeen = 0;
+    int legacyRestore = -1;
+    char legacyHome[512];
+
+    legacyHome[0] = 0;
 
     statePath(path, sizeof(path), "prefs.txt");
     file = fopen(path, "rb");
@@ -718,14 +799,44 @@ static void prefsLoad(void)
 
             if (zoom >= 25 && zoom <= 400)
                 g_prefs.zoom = zoom;
+        } else if (!strcmp(line, "startup")) {
+            int v = atoi(value);
+
+            if (v >= 0 && v <= 2) {
+                g_prefs.startup = v;
+                startupSeen = 1;
+            }
+        } else if (!strcmp(line, "page")) {
+            startupPageAdd(value);
         } else if (!strcmp(line, "restore")) {
-            g_prefs.restore = atoi(value) ? 1 : 0;
+            /* Previous release: a plain restore flag. Applied below only when
+             * the file has no "startup" line. */
+            legacyRestore = atoi(value) ? 1 : 0;
+        } else if (!strcmp(line, "home")) {
+            /* Previous release: one startup URL. */
+            _snprintf(legacyHome, sizeof(legacyHome), "%s", value);
+            legacyHome[sizeof(legacyHome) - 1] = 0;
         }
     }
 
     fclose(file);
-    agbLog(AGB_LOG_SHELL, "prefs: search=%s zoom=%d restore=%d",
-           kEngineNames[g_prefs.search], g_prefs.zoom, g_prefs.restore);
+
+    if (!startupSeen) {
+        if (legacyHome[0]) {
+            if (!_stricmp(legacyHome, NEW_TAB_URL)) {
+                g_prefs.startup = 0;
+            } else {
+                g_prefs.startup = 2;
+                startupPageAdd(legacyHome);
+            }
+        } else if (legacyRestore >= 0) {
+            g_prefs.startup = legacyRestore ? 1 : 0;
+        }
+    }
+
+    agbLog(AGB_LOG_SHELL, "prefs: search=%s zoom=%d startup=%d pages=%d",
+           kEngineNames[g_prefs.search], g_prefs.zoom, g_prefs.startup,
+           g_prefs.pageCount);
 }
 
 /* Profile-backed shell state. Both the GUI and the probe need it: the probe
@@ -4263,8 +4374,9 @@ static int createTabIn(int index, const char* url)
      * 100% until the window happens to change monitors. */
     agave_webview_set_device_scale(tab->view, deviceScalePercent(CHROME->theme.dpi));
 
-    agbLog(AGB_LOG_SHELL, "tab create index=%d dpi=%d%% url=%s", index,
-           deviceScalePercent(CHROME->theme.dpi), tab->url);
+    agbLog(AGB_LOG_SHELL, "tab create index=%d dpi=%d%% url=%s (pid=%lu)", index,
+           deviceScalePercent(CHROME->theme.dpi), tab->url,
+           (unsigned long)GetCurrentProcessId());
 
     /* The GUI saves where a user expects to find downloads; the probe keeps the
      * engine default (<AGB_USERDATA>/downloads) so tests never touch this. */
@@ -5058,8 +5170,18 @@ static void settingsSendAll(AgaveWebView* view)
     _snprintf(number, sizeof(number), "%d", g_prefs.zoom);
     settingsSend(view, "zoom", number);
 
-    _snprintf(number, sizeof(number), "%d", g_prefs.restore);
-    settingsSend(view, "restore", number);
+    _snprintf(number, sizeof(number), "%d", g_prefs.startup);
+    settingsSend(view, "startup", number);
+
+    _snprintf(number, sizeof(number), "%d", g_prefs.pageCount);
+    settingsSend(view, "pages", number);
+
+    {
+        int i;
+
+        for (i = 0; i < g_prefs.pageCount; ++i)
+            settingsSend(view, "page", g_prefs.pages[i]);
+    }
 
     _snprintf(number, sizeof(number), "%d", g_historyCount);
     settingsSend(view, "history", number);
@@ -5180,8 +5302,41 @@ static void settingsApply(const char* key, const char* value)
             InvalidateRect(g_cur->hwnd, NULL, FALSE);
         }
     } else if (!strcmp(key, "restore")) {
-        g_prefs.restore = atoi(value) ? 1 : 0;
-        agbLog(AGB_LOG_SHELL, "settings: restore -> %d", g_prefs.restore);
+        /* Previous release's flag: keep it working for old pages/tests. */
+        g_prefs.startup = atoi(value) ? 1 : 0;
+        agbLog(AGB_LOG_SHELL, "settings: startup -> %d (from restore)", g_prefs.startup);
+        prefsSave();
+    } else if (!strcmp(key, "home")) {
+        /* Previous release's single homepage: one entry in the page list. */
+        startupPagesClear();
+        if (value[0] && _stricmp(value, NEW_TAB_URL) != 0) {
+            g_prefs.startup = 2;
+            startupPageAdd(value);
+        } else {
+            g_prefs.startup = 0;
+        }
+        agbLog(AGB_LOG_SHELL, "settings: startup -> %d (from home)", g_prefs.startup);
+        prefsSave();
+    } else if (!strcmp(key, "startup")) {
+        int mode = atoi(value);
+
+        if (mode < 0 || mode > 2)
+            mode = 0;
+
+        g_prefs.startup = mode;
+        agbLog(AGB_LOG_SHELL, "settings: startup -> %d (pages=%d)", mode,
+               g_prefs.pageCount);
+        prefsSave();
+    } else if (!strcmp(key, "pages")) {
+        /* "pages=" starts a new list: the page sends one "page=" per line. */
+        startupPagesClear();
+        agbLog(AGB_LOG_SHELL, "settings: startup pages cleared");
+        prefsSave();
+    } else if (!strcmp(key, "page")) {
+        startupPageAdd(value);
+        agbLog(AGB_LOG_SHELL, "settings: startup page -> %s (count=%d)",
+               g_prefs.pageCount > 0 ? g_prefs.pages[g_prefs.pageCount - 1] : "",
+               g_prefs.pageCount);
         prefsSave();
     }
 }
@@ -7583,9 +7738,29 @@ static void probeOnMessage(AgaveWebView* view, const char* message, void* user)
     }
 
     /* minishell://settings asks for its values; the probe answers with the same
-     * code the shell uses, so the page can be verified headlessly. */
+     * code the shell uses, so the page can be verified headlessly. Writes go
+     * through the same settingsApply(), so a test can check the round trip. */
     if (message && !strncmp(message, "__agb_settings_get__", 20)) {
         settingsSendAll(g_probeView);
+        return;
+    }
+
+    if (message && !strncmp(message, "__agb_settings_set__", 20)) {
+        const char* pair = message + 20;
+        const char* equals = strchr(pair, '=');
+        char key[64];
+
+        if (equals) {
+            size_t length = (size_t)(equals - pair);
+
+            if (length >= sizeof(key))
+                length = sizeof(key) - 1;
+            memcpy(key, pair, length);
+            key[length] = 0;
+
+            settingsApply(key, equals + 1);
+            settingsSendAll(g_probeView);
+        }
         return;
     }
 
@@ -12557,13 +12732,19 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR commandLine, 
         strncpy(initial, g_startupUrl, sizeof(initial) - 1);
         initial[sizeof(initial) - 1] = 0;
         agbLog(AGB_LOG_SHELL, "startup url from argv: %s", initial);
-    } else if (g_prefs.restore) {
+    } else if (g_prefs.startup == 1) {
         restored = loadSession(session, 8);
-        strcpy(initial, restored > 0 ? session[0] : "http://www.163.com");
-        agbLog(AGB_LOG_SHELL, "session restored tabs=%d first=%s", restored, initial);
+        strcpy(initial, restored > 0 ? session[0] : NEW_TAB_URL);
+        agbLog(AGB_LOG_SHELL, "startup: continue where you left off (tabs=%d first=%s pid=%lu)",
+               restored, initial, (unsigned long)GetCurrentProcessId());
+    } else if (g_prefs.startup == 2 && g_prefs.pageCount > 0) {
+        strcpy(initial, g_prefs.pages[0]);
+        agbLog(AGB_LOG_SHELL, "startup: %d configured page(s), first=%s (pid=%lu)",
+               g_prefs.pageCount, initial, (unsigned long)GetCurrentProcessId());
     } else {
-        strcpy(initial, "http://www.163.com");
-        agbLog(AGB_LOG_SHELL, "session restore is off (settings), starting at %s", initial);
+        strcpy(initial, NEW_TAB_URL);
+        agbLog(AGB_LOG_SHELL, "startup: new tab page (pid=%lu)",
+               (unsigned long)GetCurrentProcessId());
     }
 
     if (restored > 1) {
@@ -12571,6 +12752,13 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR commandLine, 
 
         for (i = 0; i < restored; ++i)
             createTab(session[i]);
+
+        setActiveTab(g_activeTab);
+    } else if (!g_startupUrl[0] && g_prefs.startup == 2 && g_prefs.pageCount > 0) {
+        int i;
+
+        for (i = 0; i < g_prefs.pageCount; ++i)
+            createTab(g_prefs.pages[i]);
 
         setActiveTab(g_activeTab);
     } else {

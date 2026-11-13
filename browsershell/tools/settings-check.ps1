@@ -19,6 +19,18 @@ var z = document.getElementById('zoomDD');
 var theme = t ? t.value : 'none';
 var search = s ? s.getAttribute('data-value') : '';
 var zoom = z ? z.getAttribute('data-value') : '';
+
+/* On startup: the default is the New Tab page, with the page editor hidden. */
+var sp = document.querySelector('input[name=startup]:checked');
+var startupBefore = sp ? sp.value : 'none';
+var row = document.getElementById('startupPagesRow');
+var rowHiddenBefore = row.style.display === 'none';
+document.querySelector('input[name=startup][value="2"]').click();
+var rowShown = row.style.display !== 'none';
+var ta = document.getElementById('startupPages');
+ta.value = 'baidu.com\nhttps://example.com/path';
+ta.dispatchEvent(new Event('change'));
+
 /* The custom dropdown must open on the first click and pick on one click
  * (the native <select> popup needed two and landed in the wrong place). */
 var btn = s.querySelector('.dd-btn');
@@ -28,7 +40,10 @@ s.querySelector('.dd-item[data-value=bing]').click();
 var ddPick = s.getAttribute('data-value');
 var ddClosed = !s.classList.contains('open');
 probeExit('theme=' + theme + '|search=' + search + '|zoom=' + zoom +
-          '|restore=' + document.getElementById('restore').checked +
+          '|startupBefore=' + startupBefore +
+          '|rowHiddenBefore=' + rowHiddenBefore +
+          '|rowShown=' + rowShown +
+          '|pagesText=' + ta.value.split('\n').join(',') +
           '|version=' + document.getElementById('version').textContent +
           '|downloads=' + document.getElementById('downloads').textContent +
           '|scale=' + document.getElementById('scale').textContent +
@@ -47,9 +62,24 @@ probeExit('theme=' + theme + '|search=' + search + '|zoom=' + zoom +
 $evalFile = Join-Path $env:TEMP 'mb-settings-check.js'
 Set-Content -Encoding UTF8 $evalFile $eval
 
+# Fresh profile: the page writes settings through the host now, and a stale
+# probe profile would carry them into the next run.
+$work = Join-Path $env:TEMP ('mb-settings-' + [guid]::NewGuid().ToString('N').Substring(0, 8))
+New-Item -ItemType Directory -Force $work | Out-Null
+
+$log = Join-Path $root 'build-msvc\Release\shell.log'
+$before = if (Test-Path $log) { (Get-Content $log).Count } else { 0 }
+
 $out = & (Join-Path $PSScriptRoot 'probe.ps1') -Url 'minishell://settings' `
-    -EvalFile $evalFile -Wait 500 -Settle 900 -Timeout $Timeout -PassThru
+    -EvalFile $evalFile -Wait 500 -Settle 900 -Timeout $Timeout -PassThru `
+    -UserData (Join-Path $work 'profile')
 Remove-Item $evalFile -ErrorAction SilentlyContinue
+Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
+
+$newLog = @()
+if (Test-Path $log) {
+    $newLog = @(Get-Content $log | Select-Object -Skip $before)
+}
 
 $line = ($out.output -split "`r?`n" | Where-Object { $_ -match '\[exit\]' } | Select-Object -First 1)
 if (-not $line) {
@@ -69,7 +99,19 @@ $problems = @()
 if ($fields['theme'] -notin @('system', 'light', 'dark')) { $problems += "theme='$($fields['theme'])'" }
 if ($fields['search'] -notin @('baidu', 'bing', 'google', 'duckduckgo')) { $problems += "search='$($fields['search'])'" }
 if ($fields['zoom'] -notmatch '^(75|90|100|110|125|150)$') { $problems += "zoom='$($fields['zoom'])'" }
-if ($fields['restore'] -notin @('true', 'false')) { $problems += "restore='$($fields['restore'])'" }
+# On startup (Chrome's model): default is the New Tab page, editor hidden;
+# choosing the specific-pages mode reveals the URL editor.
+if ($fields['startupBefore'] -ne '0') { $problems += "startup default='$($fields['startupBefore'])' instead of 0 (new tab page)" }
+if ($fields['rowHiddenBefore'] -ne 'True') { $problems += "pages editor visible before choosing the mode ('$($fields['rowHiddenBefore'])')" }
+if ($fields['rowShown'] -ne 'True') { $problems += 'pages editor did not appear for the specific-pages mode' }
+if ($fields['pagesText'] -ne 'baidu.com,https://example.com/path') { $problems += "pages editor text='$($fields['pagesText'])'" }
+
+# The edit above went through the host: the log is the proof it was applied
+# (and normalized to URLs). The probe answers sets with the shell's own code.
+$startupLog = @($newLog | Where-Object { $_ -match 'settings: startup -> 2' })
+$pageLog = @($newLog | Where-Object { $_ -match 'settings: startup page -> https://(baidu\.com|example\.com/path)' })
+if ($startupLog.Count -eq 0) { $problems += 'the host never applied startup=2' }
+if ($pageLog.Count -lt 2) { $problems += 'the host did not store both startup pages' }
 if (-not $fields['version']) { $problems += 'version is empty (host never answered)' }
 # Shell and engine are separate products: the shell row must not carry the
 # engine's name, and the profile folder belongs to Data, not About.
