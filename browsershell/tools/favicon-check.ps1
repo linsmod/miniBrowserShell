@@ -188,6 +188,93 @@ try {
     } elseif ($cached) {
         "restored a cached icon without the server ($($cacheFiles.Count) file(s) in the cache)"
     }
+
+    # --- 4. closing a tab mid-download must not crash -----------------------
+    # Regression: viewMarkDestroyed() used to call mbNetCancelWebUrlRequest()
+    # with the value mbNetStartUrlRequest() returns, which is 1, not a request
+    # id; the engine AVed (mbNetCancelWebUrlRequest+0x8) when a tab was closed
+    # while its icon was still downloading.
+    $slowPort = Get-Random -Minimum 24000 -Maximum 40000
+    $slowServer = Start-Job -ScriptBlock {
+        param($port, $pngBytes)
+
+        $listener = [System.Net.HttpListener]::new()
+        $listener.Prefixes.Add("http://127.0.0.1:$port/")
+        $listener.Start()
+        $deadline = (Get-Date).AddSeconds(25)
+
+        while ((Get-Date) -lt $deadline) {
+            $task = $listener.GetContextAsync()
+            while (-not $task.AsyncWaitHandle.WaitOne(250)) {
+                if ((Get-Date) -ge $deadline) { break }
+            }
+            if (-not $task.IsCompleted) { continue }
+
+            $ctx = $task.Result
+            try {
+                if ($ctx.Request.Url.AbsolutePath -eq '/icon.png') {
+                    Start-Sleep -Milliseconds 3000
+                    $ctx.Response.ContentType = 'image/png'
+                    $ctx.Response.ContentLength64 = $pngBytes.Length
+                    $ctx.Response.OutputStream.Write($pngBytes, 0, $pngBytes.Length)
+                } else {
+                    $html = '<!DOCTYPE html><html><head>' +
+                            '<link rel="icon" type="image/png" href="/icon.png">' +
+                            '</head><body>slow icon</body></html>'
+                    $bytes = [Text.Encoding]::UTF8.GetBytes($html)
+                    $ctx.Response.ContentType = 'text/html'
+                    $ctx.Response.ContentLength64 = $bytes.Length
+                    $ctx.Response.OutputStream.Write($bytes, 0, $bytes.Length)
+                }
+            } catch {
+            }
+            $ctx.Response.Close()
+        }
+
+        $listener.Stop()
+    } -ArgumentList $slowPort, $pngBytes
+
+    Start-Sleep -Milliseconds 400
+    $before4 = if (Test-Path $log) { (Get-Content $log).Count } else { 0 }
+    $env:AGB_TEST_CLOSE_TAB_MS = '1200'
+    $shell = Start-Process -FilePath $exe `
+        -ArgumentList @('--userdata', (Join-Path $work 'profile-close'),
+                        "http://127.0.0.1:$slowPort/slow.html") `
+        -WorkingDirectory $work -PassThru -WindowStyle Hidden
+    $childId = $shell.Id
+
+    $started = $false
+    $deadline = (Get-Date).AddMilliseconds($Timeout)
+    while ((Get-Date) -lt $deadline) {
+        $lines = @()
+        if (Test-Path $log) {
+            $lines = @(Get-Content $log | Select-Object -Skip $before4 |
+                Where-Object { $_ -match "pid=$childId" })
+        }
+        if (@($lines | Where-Object { $_ -match 'favicon: fetching' }).Count -gt 0) {
+            $started = $true
+            break
+        }
+        if ($shell.HasExited) { break }
+        Start-Sleep -Milliseconds 100
+    }
+
+    # The tab closes at 1.2 s, the slow icon answers at 3 s: stay past both.
+    Start-Sleep -Seconds 4
+    if (-not $started) {
+        $problems += 'the slow icon download never started'
+    } elseif ($shell.HasExited) {
+        $problems += "closing a tab during the icon download killed the shell (exit $($shell.ExitCode))"
+    } else {
+        'closing the tab mid-download left the shell alive'
+    }
+
+    Remove-Item Env:AGB_TEST_CLOSE_TAB_MS -ErrorAction SilentlyContinue
+    if (-not $shell.HasExited) { Stop-Process -Id $shell.Id -Force -ErrorAction SilentlyContinue }
+    $shell = $null
+    Stop-Job $slowServer -ErrorAction SilentlyContinue
+    Remove-Job $slowServer -Force -ErrorAction SilentlyContinue
+    $slowServer = $null
 } finally {
     if ($shell -and -not $shell.HasExited) {
         Stop-Process -Id $shell.Id -Force -ErrorAction SilentlyContinue
@@ -197,6 +284,11 @@ try {
         Stop-Job $server -ErrorAction SilentlyContinue
         Remove-Job $server -Force -ErrorAction SilentlyContinue
     }
+    if ($slowServer) {
+        Stop-Job $slowServer -ErrorAction SilentlyContinue
+        Remove-Job $slowServer -Force -ErrorAction SilentlyContinue
+    }
+    Remove-Item Env:AGB_TEST_CLOSE_TAB_MS -ErrorAction SilentlyContinue
     Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 }
 

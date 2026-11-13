@@ -46,7 +46,7 @@ MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webv
 | `tools/newtab-open-check.ps1` | 打开新标签页（handoff `--new-tab`，同 Ctrl+T）不能崩：隐藏壳 + 等 2 秒仍存活 |
 | `tools/tabsearch-check.ps1` | 标签搜索在加载中不被引擎的伪 `WM_ACTIVATE(WA_INACTIVE)` 关掉：隐藏壳 + `AGB_TEST_TABSEARCH=1`，5 秒后仍 open |
 | `tools/settings-restore-check.ps1` | 恢复会话时排在后台的 `minishell://settings` 也能拿到动态数据：临时 profile 写 `restore=1` + settings/文件页两行 session，隐藏壳断言后台请求被回答且 `delivered` 计数达到整组 |
-| `tools/favicon-check.ps1` | favicon：`--ui-shot --ui-favicon` 解码并画出真实 PNG/ICO（断言 tab 像素），再加本地 HTTP 页面验证页面报 icon URL → `agave_webview_fetch` 走引擎网络栈下载 → 解码落到 tab |
+| `tools/favicon-check.ps1` | favicon：`--ui-shot --ui-favicon` 解码并画出真实 PNG/ICO（断言 tab 像素），本地 HTTP 页面验证"页面报 icon URL → `agave_webview_fetch` 走引擎网络栈 → 解码落到 tab"，同一 profile 断网重启验证缓存图标，`AGB_TEST_CLOSE_TAB_MS` 验证下载中关标签不崩 |
 | `tools/gen-shell-version.ps1` | 构建前生成 `build-msvc/generated/shell_version.h`（tag 或 6 位 commit，脏树加 `-dirty`） |
 
 崩溃链路（报告 → 崩溃页）可以 headless 验证，不要开窗口：
@@ -109,6 +109,10 @@ MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webv
 - **`mbOnDocumentReady` 对普通快速页面可能根本不触发**：`docReady` 只由这个回调置位，页面就会
   缺 prelude（`agavePostMessage`、find/inspect 辅助函数全没有）。所以 loadingFinish 时若还没
   `docReady`，补一次 prelude 注入。
+- **`mbNetStartUrlRequest` 返回的是 1，不是 request id**：导出函数最后就是 `mov eax,1`。把它的返回值
+  拿去 `mbNetCancelWebUrlRequest()` 会解引用一个不存在的 id，引擎直接 AV（`mbNetCancelWebUrlRequest+0x8`，
+  关标签时 favicon 还在下载就必现）。控件销毁时不要取消，只把 job 与控件分离（`f->v = NULL`），
+  终止回调自己释放；图标请求很短，且完成回调只碰 job。
 - **`WH_MOUSE_LL` 钩子返回 1 会冻住鼠标**：低层鼠标钩子的返回值是"丢弃该事件"，对 `WM_MOUSEMOVE`
   返回非 0 等于把光标的移动也丢掉，鼠标就动不了了（本机实测锁死）。输入拦截必须走控件自己的消息路径
   —— `agave_webview_set_input_capture`（`mb_view.c` 的 `mbvViewProc`），光标照常移动、页面只是收不到消息。

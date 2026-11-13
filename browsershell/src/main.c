@@ -4139,6 +4139,9 @@ static void createTab(const char* url)
  * seconds of every real navigation and rebuilds the one control that never
  * answered. */
 #define NAV_GUARD_TIMER        2
+/* Headless regression hook (AGB_TEST_CLOSE_TAB_MS): close the active tab while
+ * its favicon download is still in flight. */
+#define TEST_CLOSE_TAB_TIMER   3
 #define NAV_GUARD_POLL_MS      250
 #define NAV_GUARD_DEFAULT_MS   4000
 #define NAV_GUARD_MAX_RESPAWNS 2
@@ -6087,6 +6090,13 @@ static LRESULT CALLBACK shellProcInner(HWND hwnd, UINT message, WPARAM wParam, L
         /* A navigation the engine never picked up: rebuild the control. */
         if (wParam == NAV_GUARD_TIMER) {
             navGuardTick();
+            return 0;
+        }
+
+        if (wParam == TEST_CLOSE_TAB_TIMER) {
+            KillTimer(hwnd, TEST_CLOSE_TAB_TIMER);
+            agbLog(AGB_LOG_SHELL, "test: closing the active tab (fetch may be in flight)");
+            closeTab(g_activeTab);
             return 0;
         }
         break;
@@ -12139,6 +12149,21 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR commandLine, 
     if (getenv("AGB_TEST_TABSEARCH")) {
         agbLog(AGB_LOG_SHELL, "test: opening tab search at startup");
         toggleTabSearchPopup();
+    }
+
+    /* Headless reproduction hook: close the active tab after a delay, used to
+     * close a tab while its favicon download is in flight. */
+    {
+        const char* closeMs = getenv("AGB_TEST_CLOSE_TAB_MS");
+
+        if (closeMs && closeMs[0]) {
+            int ms = atoi(closeMs);
+
+            if (ms < 50)
+                ms = 50;
+            agbLog(AGB_LOG_SHELL, "test: closing the active tab in %d ms", ms);
+            SetTimer(g_hwnd, TEST_CLOSE_TAB_TIMER, (UINT)ms, NULL);
+        }
     }
 
     agbLog(AGB_LOG_SHELL, "entering message loop");

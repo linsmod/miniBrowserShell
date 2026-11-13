@@ -89,7 +89,6 @@ typedef struct MvFetch {
     int   len;
     int   failed;
     int   cancelled;
-    int   requestId;
 } MvFetch;
 
 #define MBV_PROFILE_MAX   MAX_PATH
@@ -441,18 +440,20 @@ static void viewMarkDestroyed(MbView* v)
 
     /* A host fetch is independent of the document but its terminal callback
      * lands on the loader thread and would post to a window that is going
-     * away. Cancel it; the callback (if the engine still sends one) sees
-     * v == NULL and releases the job. */
+     * away. Detach it: the callback sees v == NULL and releases the job.
+     *
+     * Deliberately NOT mbNetCancelWebUrlRequest(): the shipped export returns
+     * a plain 1 instead of a request id (disassembly: the wrapper always sets
+     * eax=1), so canceling with it dereferences a bogus id and AVs inside
+     * mb132 (seen as mbNetCancelWebUrlRequest+0x8 when closing a tab whose
+     * icon was still downloading). The icon request is short-lived and its
+     * completion only touches the detached job. */
     if (v->fetch) {
         MvFetch* f = v->fetch;
 
         v->fetch = NULL;
         f->v = NULL;
         f->cancelled = 1;
-        if (f->requestId) {
-            mbNetCancelWebUrlRequest(f->requestId);
-            f->requestId = 0;
-        }
     }
 }
 
@@ -991,11 +992,10 @@ static void mbvFetchData(mbWebView wv, void* param, mbWebUrlRequestPtr request,
         return;
 
     /* An icon is a few KB; anything near a megabyte is not one (a page that
-     * points <link rel=icon> at a photo). */
+     * points <link rel=icon> at a photo). Stop collecting; the job still ends
+     * on its own (there is no usable cancel id, see viewMarkDestroyed). */
     if (f->len + dataLength > 1024 * 1024) {
         f->failed = 1;
-        if (f->requestId)
-            mbNetCancelWebUrlRequest(f->requestId);
         return;
     }
 
@@ -1054,8 +1054,6 @@ static void mbvFetchFinish(mbWebView wv, void* param, mbWebUrlRequestPtr request
     if (!f)
         return;
 
-    f->requestId = 0;
-
     if (!f->v || f->cancelled) {
         f->cancelled = 1;
         if (f->v && f->v->fetch == f)
@@ -1100,14 +1098,14 @@ int agave_webview_fetch(AgaveWebView* view, const char* url,
     callbacks.didFailCallback = mbvFetchFail;
     callbacks.didFinishLoadingCallback = mbvFetchFinish;
 
-    f->requestId = mbNetStartUrlRequest(v->wv, request, f, &callbacks);
-    if (!f->requestId) {
+    /* The export returns 1 ("started"), not an id - see viewMarkDestroyed. */
+    if (!mbNetStartUrlRequest(v->wv, request, f, &callbacks)) {
         free(f);
         return 0;
     }
 
     v->fetch = f;
-    trace("fetch start url=%s id=%d", f->url, f->requestId);
+    trace("fetch start url=%s", f->url);
     return 1;
 }
 
