@@ -593,6 +593,7 @@ static void deliverEvent(MbView* v, MbEvent* e)
     /* The last load of a retired view settled: the engine is quiet, tear it
      * down. This must run before the `destroying` gate below. */
     if (e->type == MBV_EV_FINALIZE) {
+        trace("retired view: last load settled, finalizing");
         viewFinishDestroy(v);
         return;
     }
@@ -678,6 +679,31 @@ static void deliverEvent(MbView* v, MbEvent* e)
         agave_webview_destroy((AgaveWebView*)v);
         break;
     }
+}
+
+/* Network-level failure: the URL never produced a document. This is the
+ * terminal callback for a load that never commits - mbOnLoadingFinish does not
+ * fire for those - so it is the point where a view retired mid-request can be
+ * finalized safely. Only the main URL is trusted: a failing subresource must
+ * not tear down a view whose navigation is still in flight. */
+static void MB_CALL_TYPE mbvOnLoadUrlFail(mbWebView wv, void* param,
+                                          const char* url, void* job)
+{
+    MbView* v = (MbView*)param;
+
+    (void)wv;
+    (void)job;
+
+    if (!v)
+        return;
+
+    if (v->destroying) {
+        if (v->destroyPending && url && url[0] && v->url[0] && !_stricmp(url, v->url))
+            postEvent(v, MBV_EV_FINALIZE, NULL, NULL, 0, 0);
+        return;
+    }
+
+    trace("cb loadUrlFail: %s", url ? url : "");
 }
 
 static void MB_CALL_TYPE mbvOnTitle(mbWebView wv, void* param, const utf8* title)
@@ -1619,6 +1645,7 @@ AgaveWebView* agave_webview_create(void* parent, int x, int y, int width, int he
     mbOnTitleChanged(v->wv, mbvOnTitle, v);
     mbOnURLChanged(v->wv, mbvOnUrl, v);
     mbOnLoadingFinish(v->wv, mbvOnLoadingFinish, v);
+    mbOnLoadUrlFail(v->wv, mbvOnLoadUrlFail, v);
     mbOnDocumentReady(v->wv, mbvOnDocumentReady, v);
     mbOnNavigation(v->wv, mbvOnNavigation, v);
     mbOnMouseOverUrlChanged(v->wv, mbvOnStatus, v);
@@ -1719,7 +1746,9 @@ void agave_webview_destroy(AgaveWebView* view)
      * that no longer exists and faults inside mb132 (0x5e666f, reading [0xF0]) -
      * reproduced whenever the nav guard rebuilt a view for a page that never
      * committed and the request then failed. Hide the control instead and let
-     * the loading-finish callback finalize it once the engine is done. */
+     * the terminal callback finalize it once the engine is done: loading-finish
+     * for a committed load, loadUrlFail for one that never produced a document
+     * (mbStopLoading and mbNetCancelRequest do not make an early destroy safe). */
     if (v->wv && v->loading) {
         v->destroyPending = 1;
         mbStopLoading(v->wv);

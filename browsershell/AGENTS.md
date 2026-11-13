@@ -40,6 +40,7 @@ MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webv
 | `tools/dlserver.ps1` | 下载/新窗口回归用的本地 HTTP 服务 |
 | `tools/hangserver.ps1` | 只 accept 不响应的 TCP 服务，用来触发"加载永不提交"和导航守卫 |
 | `tools/navguard-check.ps1` | 导航守卫销毁在途控件（请求随后失败）不再把引擎带崩：隐藏壳 + 6 秒后关闭服务端，12 秒仍存活 |
+| `tools/repro-destroy-inflight.ps1` | 只依赖 `mb132_x64.dll` 的最小复现（给引擎作者）：在途请求时 `mbDestroyWebView` → 6 秒后服务端关闭即 AV |
 
 崩溃链路（报告 → 崩溃页）可以 headless 验证，不要开窗口：
 `AGB_TEST_CRASH=1 AGB_CRASH_POPUP=0` 只写 `agb_crash.txt`；
@@ -64,9 +65,12 @@ MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webv
   保持显示缩放，页面只放大一次。`tools/zoom-check.ps1` 锁的是这个行为。
 - **请求在途时 `mbDestroyWebView` 会崩**：销毁一个还在导航的控件后，网络完成回到已释放的
   webview，引擎在 `mb132+0x5e666f` 读 `[0xF0]`（read 0）直接 AV；导航守卫"销毁并立即重建"
-  正好踩中（`tools/hangserver.ps1 -CloseAfterMs` 可 6 秒稳定复现）。适配层的
-  `agave_webview_destroy` 因此把在途控件隐藏、等 loading-finish 再真正销毁
-  （`destroyPending` + `MBV_EV_FINALIZE`），宿主拿到销毁后不能再碰 view。
+  正好踩中（`tools/hangserver.ps1 -CloseAfterMs` 可 6 秒稳定复现，
+  `tools/repro-destroy-inflight.ps1` 是只依赖 DLL 的最小复现）。提前
+  `mbStopLoading` 或 `mbNetCancelRequest` 都**不能**让提前销毁变安全；必须等终止回调：
+  已提交的加载等 `mbOnLoadingFinish`，从未提交文档的加载等 `mbOnLoadUrlFail`
+  （失败发生在 socket 关闭后十几毫秒）。适配层的 `agave_webview_destroy` 因此在途时
+  隐藏控件、等这两个回调之一再真正销毁（`destroyPending` + `MBV_EV_FINALIZE`）。
 - **webview 上方不要放任何窗口**：哪怕是一个 1/255 alpha 的分层子窗口，只要盖在页面控件上，
   resize 后页面就不再重绘（停在旧帧）。
 - **`UpdateLayeredWindow` 的源 DC 里必须还选中着那块 DIB**：先把 bitmap `SelectObject` 还原再调用，
