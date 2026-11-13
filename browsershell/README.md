@@ -112,8 +112,9 @@ Cookie / localStorage 都在这个目录下，每个标签共享同一 profile�
   关闭弹窗后左上角按钮的 hover/pressed 状态会按当前鼠标位置重置
   （滚轮/拖动/PageUp/PageDown/Home/End）；切到别的窗口/应用自动关闭
 - 自绘右键菜单和应用菜单、书签/历史子菜单
-- 窗口四边/四角可拖动缩放：页面铺满内容区（不牺牲渲染区域）；页面控件在窗口左/右/下的 resize 条上
-  把 `WM_NCHITTEST` 透传给外壳（`HTTRANSPARENT`），由外壳返回 `HTLEFT/HTBOTTOM/...` 并显示对应光标；最大化时关闭
+- 窗口四边/四角可拖动缩放：页面只让出窗口左/右/下 1-2px 的细条（外壳自己绘制，视觉上就是页面边缘）；
+  页面控件是跨线程子窗口，无法把 `WM_NCHITTEST` 交回外壳（`HTTRANSPARENT` 不生效），所以这条细边必须存在；
+  最大化时细条为 0，页面铺满
 - 主题 `AGB_SHELL_THEME=light|dark|auto`、Per-Monitor V2 DPI
 - 设置页（应用菜单 → Settings）：主题、启动时（新标签页 / 继续上次 / 打开指定网页，可多行）、搜索引擎、
   默认缩放、清空历史、下载目录；启动时和搜索引擎是分开的两节（参考 Chrome）

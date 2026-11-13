@@ -76,8 +76,14 @@ try {
             $problems += "the shell exited while the popup was open (exit $($run.shell.ExitCode))"
         } elseif ($opened.Count -eq 0) {
             $problems += 'the tab search never opened'
+        } elseif ($closed.Count -gt 0 -and $ignored.Count -eq 0) {
+            # The popup is allowed to close on a real deactivation (the desktop
+            # was in use, or the hidden shell never had this thread's active
+            # window). Only a close after the synthetic-deactivation branch ran
+            # is the regression this case exists for.
+            'case open: inconclusive (the shell was not the active window)'
         } elseif ($closed.Count -gt 0) {
-            $problems += 'the tab search closed by itself'
+            $problems += 'the tab search closed after the synthetic WA_INACTIVE'
         }
 
         "case open: opened=$($opened.Count) closed=$($closed.Count) ignoredSynthetic=$($ignored.Count -gt 0)"

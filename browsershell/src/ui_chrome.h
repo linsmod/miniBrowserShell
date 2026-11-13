@@ -74,6 +74,12 @@ typedef struct UiChrome {
 
     int width;
     int height;
+    /* Thin shell-owned strip around the page (device px), so the window's
+     * resize border is reachable: the page is a child control that swallows the
+     * mouse, and a cross-thread child cannot hand WM_NCHITTEST back. Two DIPs
+     * cost no visible rendering area and keep the edge draggable; 0 when
+     * maximized (no resize). Set by the shell. */
+    int frame_border;
     int offscreen;          /* no native EDITs: paint field text ourselves */
 
     void* parent_hwnd;

@@ -1266,6 +1266,15 @@ static void layoutAll(void)
     GetClientRect(g_hwnd, &client);
 
     syncChrome();
+
+    /* A 1-2 px shell-owned strip around the page keeps the window's resize
+     * border reachable: the page control would swallow the hit test there and a
+     * cross-thread child cannot hand WM_NCHITTEST back to the shell. Maximized:
+     * no strip (the window cannot be resized). */
+    CHROME->frame_border = IsZoomed(g_hwnd)
+                               ? 0
+                               : MulDiv(2, (int)CHROME->theme.dpi, 96);
+
     uiChromeLayout(CHROME, client.right, client.bottom);
 
     edit = CHROME->address_edit;
@@ -9523,13 +9532,15 @@ static int uiShotMain(void)
 
     {
         int content_top = chrome.theme.tabstrip_h + chrome.theme.toolbar_h;
+        int border = chrome.frame_border;
 
-        /* The page is full-bleed; the resize strip over it is handled by the
-         * control's WM_NCHITTEST, not by insetting the content. */
+        /* The page gives up only the thin shell-owned strip that keeps the
+         * resize border reachable; the rest is full-bleed. */
         uiCheck("content-full-bleed",
-                chrome.content.x == 0 && chrome.content.w == width &&
+                chrome.content.x == border &&
+                chrome.content.w == width - border * 2 &&
                 chrome.content.y == content_top &&
-                chrome.content.h == height - content_top);
+                chrome.content.h == height - content_top - border);
     }
 
     memset(&info, 0, sizeof(info));
@@ -12164,6 +12175,7 @@ static ShellWindow* createShellWindow(const char* title)
 
     /* A first layout before any tab: the toolbar/address EMPTY state is what a
      * handoff-created window shows for a few milliseconds. */
+    win->chrome.frame_border = MulDiv(2, (int)win->chrome.theme.dpi, 96);
     uiChromeLayout(&win->chrome, 1100, 760);
 
     agbLog(AGB_LOG_SHELL, "window ready hwnd=%p (windows=%d theme=%s dpi=%u)",

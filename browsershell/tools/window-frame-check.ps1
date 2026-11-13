@@ -110,32 +110,39 @@ try {
     if ($view -eq [IntPtr]::Zero -or -not [Win]::GetWindowRect($view, [ref]$vr)) {
         $problems += 'no page child window'
     } else {
-        # Full-bleed: the page reaches the window's left/right/bottom (allow the
-        # 1-2 px DWM frame), and starts below the tab strip + toolbar.
-        if ($vr.Left -gt $wr.Left + 2) { $problems += "page does not reach the left edge (inset $($vr.Left - $wr.Left))" }
-        if ($vr.Right -lt $wr.Right - 2) { $problems += "page does not reach the right edge (inset $($wr.Right - $vr.Right))" }
-        if ($vr.Bottom -lt $wr.Bottom - 2) { $problems += "page does not reach the bottom edge (inset $($wr.Bottom - $vr.Bottom))" }
+        # Only a thin shell-owned strip (1-2 DIP, scaled) around the page: the
+        # rest of the window is the page, but the strip is what keeps the window
+        # border draggable. A wider inset would eat rendering area; 0 would
+        # leave the resize border to the page control, which swallows it.
+        $leftInset = $vr.Left - $wr.Left
+        $rightInset = $wr.Right - $vr.Right
+        $bottomInset = $wr.Bottom - $vr.Bottom
+
+        if ($leftInset -lt 1 -or $leftInset -gt 6) { $problems += "page left inset $leftInset (want 1..6)" }
+        if ($rightInset -lt 1 -or $rightInset -gt 6) { $problems += "page right inset $rightInset (want 1..6)" }
+        if ($bottomInset -lt 1 -or $bottomInset -gt 6) { $problems += "page bottom inset $bottomInset (want 1..6)" }
         if ($vr.Top -le $wr.Top) { $problems += "page starts at the window's top edge ($($vr.Top))" }
-        "page rect: left=$($vr.Left) top=$($vr.Top) right=$($vr.Right) bottom=$($vr.Bottom) window=$($wr.Left),$($wr.Top),$($wr.Right),$($wr.Bottom)"
+        "page inset: left=$leftInset right=$rightInset bottom=$bottomInset top=$($vr.Top - $wr.Top)"
     }
 
     $midX = $wr.Left + [int]($width / 2)
     $midY = $wr.Top + [int]($height / 2)
 
-    # The window's own hit test turns the edges into resize borders.
-    $leftHit = [Win]::HitTest($hwnd, $wr.Left + 2, $midY)
-    $bottomHit = [Win]::HitTest($hwnd, $midX, $wr.Bottom - 2)
+    # The window's own hit test turns the shell-owned strip into resize borders
+    # (point 1 px inside the window edge, inside the 1-2 px strip).
+    $leftHit = [Win]::HitTest($hwnd, $wr.Left + 1, $midY)
+    $bottomHit = [Win]::HitTest($hwnd, $midX, $wr.Bottom - 1)
     $clientHit = [Win]::HitTest($hwnd, $midX, $midY)
     if ($leftHit -ne 10) { $problems += "window left edge hit test returned $leftHit instead of HTLEFT" }
     if ($bottomHit -ne 15) { $problems += "window bottom edge hit test returned $bottomHit instead of HTBOTTOM" }
     if ($clientHit -ne 1) { $problems += "window content hit test returned $clientHit instead of HTCLIENT" }
     "window hit test: left=$leftHit bottom=$bottomHit content=$clientHit"
 
-    # The page covers those pixels, so it must hand them back (HTTRANSPARENT)
-    # and keep HTCLIENT in its middle.
+    # The control also reports its own edge strip as HTTRANSPARENT (a help when
+    # the host and the control share a thread) and keeps HTCLIENT in the middle.
     if ($view -ne [IntPtr]::Zero) {
-        $viewLeft = [Win]::HitTest($view, $wr.Left + 2, $midY)
-        $viewBottom = [Win]::HitTest($view, $midX, $wr.Bottom - 2)
+        $viewLeft = [Win]::HitTest($view, $vr.Left + 1, $midY)
+        $viewBottom = [Win]::HitTest($view, $midX, $vr.Bottom - 1)
         $viewClient = [Win]::HitTest($view, $midX, $midY)
         if ($viewLeft -ne -1) { $problems += "page left edge returned $viewLeft instead of HTTRANSPARENT" }
         if ($viewBottom -ne -1) { $problems += "page bottom edge returned $viewBottom instead of HTTRANSPARENT" }
