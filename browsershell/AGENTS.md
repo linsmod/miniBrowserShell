@@ -44,7 +44,7 @@ MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webv
 | `tools/crash-report-check.ps1` | 崩溃报告要带项目地址、`mb132_x64.dll` SHA-256、脱敏启动参数/环境，且不能泄露启动 URL 或路径 |
 | `tools/newtab-check.ps1` | 新标签页：默认引擎与百度 `tn=` / Google `client=` 归属参数、内嵌 logo 水印、顶部对齐、浅/深色背景（`AGB_NEWTAB_THEME=dark`） |
 | `tools/newtab-open-check.ps1` | 打开新标签页（handoff `--new-tab`，同 Ctrl+T）不能崩：隐藏壳 + 等 2 秒仍存活 |
-| `tools/tabsearch-check.ps1` | 标签搜索在加载中不被引擎的伪 `WM_ACTIVATE(WA_INACTIVE)` 关掉：隐藏壳 + `AGB_TEST_TABSEARCH=1`，5 秒后仍 open |
+| `tools/tabsearch-check.ps1` | 标签搜索：加载中不被伪 `WM_ACTIVATE(WA_INACTIVE)` 关掉；`AGB_TEST_TABSEARCH_ACTIVATE` 走弹窗自己的键盘路径激活第 3 项，断言切到 index=2（同 URL 的标签也能区分）且关闭后按钮状态重置 |
 | `tools/settings-restore-check.ps1` | 恢复会话时排在后台的 `minishell://settings` 也能拿到动态数据：临时 profile 写 `restore=1` + settings/文件页两行 session，隐藏壳断言后台请求被回答且 `delivered` 计数达到整组 |
 | `tools/favicon-check.ps1` | favicon：`--ui-shot --ui-favicon` 解码并画出真实 PNG/ICO（断言 tab 像素），本地 HTTP 页面验证"页面报 icon URL → `agave_webview_fetch` 走引擎网络栈 → 解码落到 tab"，同一 profile 断网重启验证缓存图标，`AGB_TEST_CLOSE_TAB_MS` 验证下载中关标签不崩 |
 | `tools/startup-check.ps1` | 启动时设置：新标签页 / 继续上次会话 / 打开指定网页（多个），以及旧 `restore=`/`home=` 的迁移：每个 case 独立 profile，隐藏壳断言 `tab create` 的 URL |

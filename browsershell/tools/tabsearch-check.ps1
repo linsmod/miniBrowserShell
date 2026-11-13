@@ -1,10 +1,16 @@
-# tools/tabsearch-check.ps1 - the tab-search popup must survive page load.
+# tools/tabsearch-check.ps1 - the tab-search popup.
 #
-# Regression for the popup closing by itself a few seconds after a fresh start:
-# the engine sends a synthetic WM_ACTIVATE(WA_INACTIVE) to the shell while the
-# shell is still the active window, and the shell used to close the popup on
-# every WA_INACTIVE. AGB_TEST_TABSEARCH opens the popup before the message loop;
-# AGB_SHELL_HIDDEN keeps it off the desktop.
+# Case 1: the popup must survive page load. The engine sends a synthetic
+# WM_ACTIVATE(WA_INACTIVE) to the shell while the shell is still the active
+# window, and the shell used to close the popup on every WA_INACTIVE.
+# AGB_TEST_TABSEARCH opens the popup before the message loop; AGB_SHELL_HIDDEN
+# keeps it off the desktop.
+#
+# Case 2: activating an item switches the content area to that tab and resets
+# the strip's open-button state. AGB_TEST_TABSEARCH_ACTIVATE drives the popup's
+# own keyboard path (Down to the item, Enter). The tabs have identical URLs, so
+# the old "match by URL" activation picked the first new-tab page instead of the
+# selected one.
 #
 #   pwsh -File tools\tabsearch-check.ps1
 param(
@@ -24,53 +30,102 @@ New-Item -ItemType Directory -Force $work | Out-Null
 $page = Join-Path $work 'page.html'
 '<!DOCTYPE html><html><body style="margin:0">tab search check</body></html>' |
     Set-Content -Encoding UTF8 $page
-
-$before = if (Test-Path $log) { (Get-Content $log).Count } else { 0 }
+$url = 'file:///' + ($page -replace '\\', '/')
 
 $env:AGB_SHELL_HIDDEN = '1'
-$env:AGB_TEST_TABSEARCH = '1'
+$problems = @()
 
-$shell = Start-Process -FilePath $exe `
-    -ArgumentList @('--userdata', (Join-Path $work 'profile'),
-                    ('file:///' + ($page -replace '\\', '/'))) `
-    -WorkingDirectory $work -PassThru -WindowStyle Hidden
-$childId = $shell.Id
+function Start-Shell {
+    param([string]$Tag)
+    $profile = Join-Path $work "profile-$Tag"
+    $before = if (Test-Path $log) { (Get-Content $log).Count } else { 0 }
+    $shell = Start-Process -FilePath $exe `
+        -ArgumentList @('--userdata', $profile, $url) `
+        -WorkingDirectory $work -PassThru -WindowStyle Hidden
+    return @{ shell = $shell; before = $before }
+}
+
+function Read-New {
+    param($Run)
+    if (-not (Test-Path $log)) { return @() }
+    return @(Get-Content $log | Select-Object -Skip $Run.before |
+        Where-Object { $_ -match "pid=$($Run.shell.Id)" })
+}
+
+function Stop-Shell {
+    param($Run)
+    if ($Run -and $Run.shell -and -not $Run.shell.HasExited) {
+        Stop-Process -Id $Run.shell.Id -Force -ErrorAction SilentlyContinue
+    }
+}
 
 try {
-    # The synthetic WA_INACTIVE arrives ~3 s after start; wait past it.
-    Start-Sleep -Seconds 5
+    # --- 1. stays open across the synthetic WA_INACTIVE ---------------------
+    $env:AGB_TEST_TABSEARCH = '1'
+    Remove-Item Env:AGB_TEST_TABSEARCH_ACTIVATE, Env:AGB_TEST_EXTRA_TABS -ErrorAction SilentlyContinue
+    $run = Start-Shell -Tag 'open'
 
-    $lines = @()
-    if (Test-Path $log) {
-        $lines = Get-Content $log | Select-Object -Skip $before | Where-Object { $_ -match "pid=$childId" }
+    try {
+        Start-Sleep -Seconds 5
+        $lines = Read-New $run
+        $opened = @($lines | Where-Object { $_ -match 'tab search: open' })
+        $closed = @($lines | Where-Object { $_ -match 'tab search: close' })
+        $ignored = @($lines | Where-Object { $_ -match 'ignore synthetic WA_INACTIVE' })
+
+        if ($run.shell.HasExited) {
+            $problems += "the shell exited while the popup was open (exit $($run.shell.ExitCode))"
+        } elseif ($opened.Count -eq 0) {
+            $problems += 'the tab search never opened'
+        } elseif ($closed.Count -gt 0) {
+            $problems += 'the tab search closed by itself'
+        }
+
+        "case open: opened=$($opened.Count) closed=$($closed.Count) ignoredSynthetic=$($ignored.Count -gt 0)"
+    } finally {
+        Stop-Shell $run
     }
 
-    $opened = @($lines | Where-Object { $_ -match 'tab search: open' })
-    $closed = @($lines | Where-Object { $_ -match 'tab search: close' })
-    $ignored = @($lines | Where-Object { $_ -match 'ignore synthetic WA_INACTIVE' })
+    # --- 2. activating the third item switches to that tab ------------------
+    # Startup tab 0 + two extra new-tab pages (indices 1 and 2, same URL), so a
+    # URL match cannot tell them apart.
+    $env:AGB_TEST_TABSEARCH = '1'
+    $env:AGB_TEST_TABSEARCH_ACTIVATE = '0'
+    $env:AGB_TEST_EXTRA_TABS = '2'
+    $run = Start-Shell -Tag 'activate'
 
-    if ($shell.HasExited) {
-        "FAIL: the shell exited while the tab search was open (exit $($shell.ExitCode))"
-        exit 1
-    }
-    if ($opened.Count -eq 0) {
-        'FAIL: the tab search never opened'
-        exit 1
-    }
-    if ($closed.Count -gt 0) {
-        'FAIL: the tab search closed by itself:'
-        $closed | ForEach-Object { "  $_" }
-        exit 1
-    }
+    try {
+        Start-Sleep -Seconds 3
+        $lines = Read-New $run
+        $activate = @($lines | Where-Object { $_ -match 'tab activate index=2 \(was 0\)' })
+        $reset = @($lines | Where-Object { $_ -match 'tab search: strip hover reset \(hover_search=0 pressed_search=0' })
+        $closed = @($lines | Where-Object { $_ -match 'tab search: close' })
 
-    "opened; synthetic deactivation ignored: $($ignored.Count -gt 0)"
-    'PASS: the tab search stays open across page load / synthetic WA_INACTIVE'
-    exit 0
+        if ($run.shell.HasExited) {
+            $problems += "the shell exited after activation (exit $($run.shell.ExitCode))"
+        } elseif ($activate.Count -eq 0) {
+            $problems += 'activating item 0 (newest tab) did not switch to tab index 2'
+        } elseif ($closed.Count -eq 0) {
+            $problems += 'the popup did not close after activation'
+        }
+        if ($reset.Count -eq 0) {
+            $problems += 'the strip hover/pressed state was not reset when the popup closed'
+        }
+
+        "case activate: switched=$($activate.Count -gt 0) closed=$($closed.Count -gt 0) reset=$($reset.Count -gt 0)"
+    } finally {
+        Stop-Shell $run
+    }
 } finally {
-    if (-not $shell.HasExited) { Stop-Process -Id $shell.Id -Force -ErrorAction SilentlyContinue }
-    Remove-Item Env:AGB_SHELL_HIDDEN, Env:AGB_TEST_TABSEARCH -ErrorAction SilentlyContinue
+    Remove-Item Env:AGB_SHELL_HIDDEN, Env:AGB_TEST_TABSEARCH, `
+        Env:AGB_TEST_TABSEARCH_ACTIVATE, Env:AGB_TEST_EXTRA_TABS -ErrorAction SilentlyContinue
     Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 }
 
+if ($problems.Count -gt 0) {
+    'FAIL: ' + ($problems -join '; ')
+    exit 1
+}
 
+'PASS: the tab search survives load and activation switches the content area'
+exit 0
 

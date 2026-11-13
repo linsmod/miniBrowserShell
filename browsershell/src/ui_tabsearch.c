@@ -1255,6 +1255,11 @@ void uiTabSearchClose(void)
     }
 
     ShowWindow(g_ts.hwnd, SW_HIDE);
+
+    /* The owner may have painted its "open" button as pressed (the popup took
+     * the mouse before the button saw the matching mouse-up/move). */
+    if (g_ts.cb.closed)
+        g_ts.cb.closed(g_ts.cb.user);
 }
 
 int uiTabSearchIsOpen(void)

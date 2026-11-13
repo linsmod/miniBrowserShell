@@ -34,6 +34,8 @@ typedef struct {
     char title[256];
     char url[512];
     int  kind;                /* UI_TABSEARCH_OPEN / UI_TABSEARCH_CLOSED */
+    int  tab;                 /* model index for an open tab, -1 for a closed one */
+    int  closed;              /* index into the recently-closed list, -1 otherwise */
     int  age_ms;              /* for the "2h ago" column */
 } UiTabSearchItem;
 
@@ -42,6 +44,10 @@ typedef struct {
     /* `index` is the index into the snapshot array that was last handed over. */
     void (*activate)(void* user, int index);
     void (*close)(void* user, int index);
+    /* The popup closed (Escape, outside click, activation, deactivation...).
+     * Hosts use it to drop any "pressed" look the open button kept: the popup
+     * holds the mouse, so the shell sees no mouse-up/move for it. */
+    void (*closed)(void* user);
 } UiTabSearchCallbacks;
 
 /* Shows the popup anchored at screen (x, y), replacing any previous snapshot. */

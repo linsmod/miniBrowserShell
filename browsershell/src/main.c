@@ -130,6 +130,8 @@ typedef struct {
     int           iconTried;
     int           iconFetching;
     int           iconCached;      /* came from the disk cache: refresh after load */
+    /* Creation order, for the tab-search list (newest first). */
+    unsigned long long createdSeq;
     /* Last Page Visibility value handed to the control (-1 = never sent), so a
      * resize/minimize does not queue a visibility command per WM_SIZE. */
     int           visibilitySent;
@@ -184,6 +186,8 @@ static HINSTANCE    g_instance;
 static ShellWindow  g_windows[MAX_SHELL_WINDOWS];
 static ShellWindow* g_cur;          /* window the UI thread is acting on */
 static ShellWindow* g_lastActive;   /* handoff target = last active window */
+/* Monotonic creation counter: the tab-search list shows the newest tab first. */
+static unsigned long long g_tabCreatedSeq;
 static int          g_shellWindows; /* used entries in g_windows */
 
 #define g_hwnd        (g_cur->hwnd)
@@ -1431,8 +1435,9 @@ static void setActiveTab(int index)
     g_tabs[index].activeMs = shellOps()->tick_ms(NULL);
 
     if (index != g_activeTab || !g_tabs[index].hwnd)
-        agbLog(AGB_LOG_SHELL, "tab activate index=%d (was %d) url=%s",
-               index, g_activeTab, g_tabs[index].url);
+        agbLog(AGB_LOG_SHELL, "tab activate index=%d (was %d) url=%s (pid=%lu)",
+               index, g_activeTab, g_tabs[index].url,
+               (unsigned long)GetCurrentProcessId());
 
     g_activeTab = index;
 
@@ -1651,9 +1656,25 @@ static void refreshTabHoverFromCursor(void)
     strip = &CHROME->tabstrip;
     strip->hover_tab = -1;
     strip->hover_close = -1;
+    strip->hover_search = 0;
+    strip->hover_new_tab = 0;
+    strip->pressed_search = 0;
+    strip->pressed_new_tab = 0;
 
     if (!shellCursorClient(g_hwnd, &point))
         return;
+
+    /* Same order as the strip's hit test: the search entry and "+" win over an
+     * overflowing tab. */
+    if (uiRectContains(strip->search, point.x, point.y)) {
+        strip->hover_search = 1;
+        return;
+    }
+
+    if (uiRectContains(strip->new_tab, point.x, point.y)) {
+        strip->hover_new_tab = 1;
+        return;
+    }
 
     for (i = 0; i < strip->count; ++i) {
         int index = strip->slot_of[i];
@@ -4320,6 +4341,7 @@ static int createTabIn(int index, const char* url)
     tab = &g_tabs[index];
     tabClearIcon(tab);
     memset(tab, 0, sizeof(Tab));
+    tab->createdSeq = ++g_tabCreatedSeq;
     memset(&callbacks, 0, sizeof(callbacks));
 
     callbacks.on_title = onTitle;
@@ -11793,26 +11815,51 @@ static int g_tabSearchItemCount;
 static void fillTabSearchItems(void)
 {
     unsigned long long now = shellOps()->tick_ms(NULL);
+    int order[UI_MAX_TABS];
+    int orderCount = 0;
     int i;
 
     g_tabSearchItemCount = 0;
 
-    for (i = 0; i < MAX_TABS && g_tabSearchItemCount < UI_TABSEARCH_MAX_ITEMS; ++i) {
+    for (i = 0; i < MAX_TABS; ++i) {
+        if (g_tabs[i].used && g_tabs[i].url[0])
+            order[orderCount++] = i;
+    }
+
+    /* Newest tab first: the page that was just opened belongs at the top. */
+    for (i = 1; i < orderCount; ++i) {
+        int key = order[i];
+        int j = i - 1;
+
+        while (j >= 0 &&
+               g_tabs[order[j]].createdSeq < g_tabs[key].createdSeq) {
+            order[j + 1] = order[j];
+            --j;
+        }
+
+        order[j + 1] = key;
+    }
+
+    for (i = 0; i < orderCount && g_tabSearchItemCount < UI_TABSEARCH_MAX_ITEMS; ++i) {
+        int index = order[i];
         UiTabSearchItem* item = &g_tabSearchItems[g_tabSearchItemCount];
 
-        if (!g_tabs[i].used || !g_tabs[i].url[0])
-            continue;
-
         memset(item, 0, sizeof(*item));
-        strncpy(item->title, g_tabs[i].title[0] ? g_tabs[i].title : g_tabs[i].url,
+        strncpy(item->title, g_tabs[index].title[0] ? g_tabs[index].title
+                                                    : g_tabs[index].url,
                 sizeof(item->title) - 1);
-        strncpy(item->url, g_tabs[i].url, sizeof(item->url) - 1);
+        strncpy(item->url, g_tabs[index].url, sizeof(item->url) - 1);
         item->kind = UI_TABSEARCH_OPEN;
-        item->age_ms = (int)(now - (g_tabs[i].activeMs ? g_tabs[i].activeMs : now));
+        item->tab = index;
+        item->closed = -1;
+        item->age_ms = (int)(now - (g_tabs[index].activeMs ? g_tabs[index].activeMs
+                                                          : now));
         ++g_tabSearchItemCount;
     }
 
-    for (i = 0; i < g_closedCount && g_tabSearchItemCount < UI_TABSEARCH_MAX_ITEMS; ++i) {
+    /* Recently closed: newest first (the list itself is append-ordered), so the
+     * tab that was just closed is the top entry. */
+    for (i = g_closedCount - 1; i >= 0 && g_tabSearchItemCount < UI_TABSEARCH_MAX_ITEMS; --i) {
         UiTabSearchItem* item = &g_tabSearchItems[g_tabSearchItemCount];
 
         memset(item, 0, sizeof(*item));
@@ -11820,6 +11867,8 @@ static void fillTabSearchItems(void)
                 sizeof(item->title) - 1);
         strncpy(item->url, g_closed[i].url, sizeof(item->url) - 1);
         item->kind = UI_TABSEARCH_CLOSED;
+        item->tab = -1;
+        item->closed = i;
         item->age_ms = (int)(now - (g_closed[i].closedMs ? g_closed[i].closedMs : now));
         ++g_tabSearchItemCount;
     }
@@ -11838,7 +11887,6 @@ static void onTabSearchActivate(void* user, int index)
 {
     ShellWindow* win = (ShellWindow*)user;
     UiTabSearchItem* item;
-    int i;
 
     if (!win || index < 0 || index >= g_tabSearchItemCount)
         return;
@@ -11847,19 +11895,18 @@ static void onTabSearchActivate(void* user, int index)
     g_cur = win;
 
     if (item->kind == UI_TABSEARCH_OPEN) {
-        for (i = 0; i < MAX_TABS; ++i) {
-            if (g_tabs[i].used && strcmp(g_tabs[i].url, item->url) == 0) {
-                setActiveTab(i);
-                break;
-            }
-        }
+        /* Use the model index captured with the snapshot: matching by URL
+         * picked the first tab with that URL (two new-tab pages are identical)
+         * and failed outright once a URL was longer than the snapshot's field.
+         * A tab that does not fit the strip is fine: the content area switches,
+         * only the strip has no item to mark active. */
+        if (item->tab >= 0 && item->tab < MAX_TABS && g_tabs[item->tab].used)
+            switchTabWarm(item->tab);
     } else {
-        for (i = 0; i < g_closedCount; ++i) {
-            if (strcmp(g_closed[i].url, item->url) == 0) {
-                reopenClosedAt(i);
-                break;
-            }
-        }
+        /* `closed` is the entry in the recently-closed list this snapshot was
+         * built from (the list is newest-first now). */
+        if (item->closed >= 0 && item->closed < g_closedCount)
+            reopenClosedAt(item->closed);
     }
 }
 
@@ -11867,24 +11914,42 @@ static void onTabSearchClose(void* user, int index)
 {
     ShellWindow* win = (ShellWindow*)user;
     UiTabSearchItem* item;
-    int i;
 
     if (!win || index < 0 || index >= g_tabSearchItemCount)
         return;
 
     item = &g_tabSearchItems[index];
 
-    if (item->kind != UI_TABSEARCH_OPEN)
+    if (item->kind != UI_TABSEARCH_OPEN || item->tab < 0 || item->tab >= MAX_TABS)
         return;
 
     g_cur = win;
 
-    for (i = 0; i < MAX_TABS; ++i) {
-        if (g_tabs[i].used && strcmp(g_tabs[i].url, item->url) == 0) {
-            closeTab(i);
-            break;
-        }
+    if (g_tabs[item->tab].used)
+        closeTab(item->tab);
+}
+
+/* The popup holds the mouse while it is open, so the strip never sees the
+ * matching mouse-up/move and the search entry could stay painted as pressed
+ * (or hovered) after the popup closes. Re-read the pointer and repaint. */
+static void onTabSearchClosed(void* user)
+{
+    ShellWindow* win = (ShellWindow*)user;
+
+    if (!win)
+        return;
+
+    g_cur = win;
+
+    if (win->hwnd && IsWindow(win->hwnd)) {
+        refreshTabHoverFromCursor();
+        InvalidateRect(win->hwnd, &win->chrome.tabstrip.rect, FALSE);
     }
+
+    agbLog(AGB_LOG_SHELL,
+           "tab search: strip hover reset (hover_search=%d pressed_search=%d pid=%lu)",
+           win->chrome.tabstrip.hover_search, win->chrome.tabstrip.pressed_search,
+           (unsigned long)GetCurrentProcessId());
 }
 
 static void toggleTabSearchPopup(void)
@@ -11910,6 +11975,7 @@ static void toggleTabSearchPopup(void)
     callbacks.user = g_cur;
     callbacks.activate = onTabSearchActivate;
     callbacks.close = onTabSearchClose;
+    callbacks.closed = onTabSearchClosed;
 
     {
         UiRect search = CHROME->tabstrip.search;
@@ -12793,8 +12859,23 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR commandLine, 
     /* Headless reproduction hook: open the tab search before the first page
      * has settled (AGB_SHELL_HIDDEN keeps the popup off the desktop). */
     if (getenv("AGB_TEST_TABSEARCH")) {
+        const char* target;
+
         agbLog(AGB_LOG_SHELL, "test: opening tab search at startup");
         toggleTabSearchPopup();
+
+        /* AGB_TEST_TABSEARCH_ACTIVATE=<item>: drive the popup's own keyboard
+         * path (Down to the item, Enter) so activation can be tested headlessly. */
+        target = getenv("AGB_TEST_TABSEARCH_ACTIVATE");
+        if (target && target[0]) {
+            int n = atoi(target);
+            int i;
+
+            for (i = 0; i <= n; ++i)
+                uiTabSearchKey(WM_KEYDOWN, VK_DOWN, 0);
+
+            uiTabSearchKey(WM_KEYDOWN, VK_RETURN, 0);
+        }
     }
 
     /* Headless reproduction hook: close the active tab after a delay, used to

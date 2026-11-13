@@ -106,7 +106,10 @@ Cookie / localStorage 都在这个目录下，每个标签共享同一 profile�
 - 缩放：Ctrl+= / Ctrl+- / Ctrl+0、Ctrl+滚轮、应用菜单和设置页；按标签记录，导航后重新套用（CSS `zoom`）
 - 查找栏：浮层、Enter/Shift+Enter、Esc 关闭
 - 标签搜索（Ctrl+Shift+A）：顶部筛选输入框（光标闪烁），Tab/Shift+Tab 在“输入框 → 标签 → 关闭按钮 →
-  下一个标签”内部循环，上下键只切换标签项；hover 仅视觉，不改键盘焦点；列表超高时有滚动条
+  下一个标签”内部循环，上下键只切换标签项；hover 仅视觉，不改键盘焦点；列表超高时有滚动条；
+  打开的标签按创建时间从新到旧排列（新页面在上），最近关闭的也在下方按最新在前；
+  选中一项即切到对应标签的内容区（包括标签条放不下、被隐藏的尾部标签：这时条上可以没有 active 项），
+  关闭弹窗后左上角按钮的 hover/pressed 状态会按当前鼠标位置重置
   （滚轮/拖动/PageUp/PageDown/Home/End）；切到别的窗口/应用自动关闭
 - 自绘右键菜单和应用菜单、书签/历史子菜单
 - 主题 `AGB_SHELL_THEME=light|dark|auto`、Per-Monitor V2 DPI
