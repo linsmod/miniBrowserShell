@@ -5124,7 +5124,9 @@ static void newTabSendTheme(AgaveWebView* view)
 {
     char message[48];
 
-    if (!view)
+    /* createTabIn() activates the tab before the first navigation, so this can
+     * fire while the view has no document yet; the page asks again on boot. */
+    if (!view || !agave_webview_has_document(view))
         return;
 
     _snprintf(message, sizeof(message), "__agb_newtab_theme__%s",

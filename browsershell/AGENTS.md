@@ -43,6 +43,7 @@ MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webv
 | `tools/repro-destroy-inflight.ps1` | 只依赖 `mb132_x64.dll` 的最小复现（给引擎作者）：在途请求时 `mbDestroyWebView` → 6 秒后服务端关闭即 AV |
 | `tools/crash-report-check.ps1` | 崩溃报告要带项目地址、`mb132_x64.dll` SHA-256、脱敏启动参数/环境，且不能泄露启动 URL 或路径 |
 | `tools/newtab-check.ps1` | 新标签页：默认引擎与百度 `tn=` / Google `client=` 归属参数、内嵌 logo 水印、顶部对齐、浅/深色背景（`AGB_NEWTAB_THEME=dark`） |
+| `tools/newtab-open-check.ps1` | 打开新标签页（handoff `--new-tab`，同 Ctrl+T）不能崩：隐藏壳 + 等 2 秒仍存活 |
 | `tools/gen-shell-version.ps1` | 构建前生成 `build-msvc/generated/shell_version.h`（tag 或 6 位 commit，脏树加 `-dirty`） |
 
 崩溃链路（报告 → 崩溃页）可以 headless 验证，不要开窗口：
@@ -66,6 +67,10 @@ MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webv
   dpr 报 1.25 但着色 62px（1.5625），页面比窗口大、右/下被裁；f=1 还会把显示缩放丢掉。
   页面缩放因此改成注入 CSS `zoom`（`mb_view.c` 的 `viewApplyEngineScale`），dpr/innerWidth
   保持显示缩放，页面只放大一次。`tools/zoom-check.ps1` 锁的是这个行为。
+- **文档 ready 前不要排队脚本**：`agave_webview_post_message` / `mbRunJs` 打给一个还没导航的新控件，
+  会在引擎换文档后执行到死 frame，崩在 `mb132+0x2508e3`（read 0）。用
+  `agave_webview_has_document()` 判断，等 document-ready 再发；新标签页的主题推送踩过这个坑
+  （`createTabIn` 先激活标签、后导航，主题消息在那时没有接收方）。
 - **请求在途时 `mbDestroyWebView` 会崩**：销毁一个还在导航的控件后，网络完成回到已释放的
   webview，引擎在 `mb132+0x5e666f` 读 `[0xF0]`（read 0）直接 AV；导航守卫"销毁并立即重建"
   正好踩中（`tools/hangserver.ps1 -CloseAfterMs` 可 6 秒稳定复现，

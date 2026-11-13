@@ -2420,6 +2420,16 @@ int agave_webview_busy(AgaveWebView* view, int minMs)
     return 0;
 }
 
+/* 1 once a document exists (document-ready). Scripts and messages must wait for
+ * this: queueing mbRunJs for a view that is still navigating puts a job on a
+ * frame the engine is about to replace, which faults inside mb132. */
+int agave_webview_has_document(AgaveWebView* view)
+{
+    MbView* v = (MbView*)view;
+
+    return v && !v->destroying && v->docReady;
+}
+
 int agave_webview_eval(AgaveWebView* view, const char* script)
 {
     MbView* v = (MbView*)view;
@@ -2683,7 +2693,9 @@ void agave_webview_post_message(AgaveWebView* view, const char* message)
     char quoted[4096];
     char script[4300];
 
-    if (!v || !message)
+    /* No document yet: there is no window.onAgaveMessage to receive it, and
+     * running it before the first navigation can queue a job on a dying frame. */
+    if (!v || !message || v->destroying || !v->docReady)
         return;
 
     jsQuote(message, quoted, sizeof(quoted));

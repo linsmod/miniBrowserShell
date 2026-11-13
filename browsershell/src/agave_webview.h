@@ -333,6 +333,11 @@ AGW_API void agave_webview_set_probe_modifiers(unsigned modifiers);
 /* Host -> page: calls window.onAgaveMessage(text) in the page (if defined). */
 AGW_API void agave_webview_post_message(AgaveWebView* view, const char* message);
 
+/* 1 once the view has a document (document-ready) whose main frame can take
+ * scripts/messages. Before that, eval-style calls must be deferred: queueing
+ * them for a view that is still navigating faults inside the engine. */
+AGW_API int agave_webview_has_document(AgaveWebView* view);
+
 /* Find in page (queued, fire-and-forget): highlights and scrolls to the next
  * match. Returns non-zero when the request was queued. */
 AGW_API int agave_webview_search(AgaveWebView* view, const char* text,
