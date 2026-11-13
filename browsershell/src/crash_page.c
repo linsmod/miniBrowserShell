@@ -399,7 +399,8 @@ int crashPageRun(const char* report_path)
         s_report = NULL;
         DestroyWindow(s_wnd);
         MessageBoxA(NULL, "The crash report page could not be created.\n\n"
-                          "The report is in agb_crash.txt next to the browser.",
+                          "The report is in the file this process was started with:\n"
+                          "(see the --crash-page argument, next to the browser).",
                     "MiniShell crash report", MB_OK | MB_ICONERROR);
         return 1;
     }

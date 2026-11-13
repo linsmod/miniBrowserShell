@@ -41,10 +41,11 @@ try {
 
     Start-Sleep -Seconds 2
 
-    $crash = Join-Path $work 'agb_crash.txt'
-    if ($shell.HasExited -or (Test-Path $crash)) {
+    $crash = Get-ChildItem (Join-Path $work 'agb_crash*.txt') -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime | Select-Object -Last 1
+    if ($shell.HasExited -or $crash) {
         "FAIL: the shell died opening a new tab (exit $($shell.ExitCode))"
-        if (Test-Path $crash) { Get-Content $crash | Select-Object -First 20 }
+        if ($crash) { Get-Content $crash.FullName | Select-Object -First 20 }
         exit 1
     }
 

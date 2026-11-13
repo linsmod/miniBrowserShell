@@ -42,8 +42,10 @@ try {
 
     if ($shell.HasExited) {
         "FAIL: the shell exited during the hang (exit $($shell.ExitCode))"
-        if (Test-Path (Join-Path $work 'agb_crash.txt')) {
-            Get-Content (Join-Path $work 'agb_crash.txt') | Select-Object -First 20
+        $crash = Get-ChildItem (Join-Path $work 'agb_crash*.txt') -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime | Select-Object -Last 1
+        if ($crash) {
+            Get-Content $crash.FullName | Select-Object -First 20
         }
         exit 1
     }

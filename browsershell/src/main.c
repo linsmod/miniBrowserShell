@@ -6083,6 +6083,11 @@ static LRESULT CALLBACK shellProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM
  * already carries the same information, and a modal box would hang CI). */
 static int g_probeMode;
 
+/* Console-only crash reporting: probe runs, offscreen chrome renders, the crash
+ * page host and tests launched with AGB_SHELL_HIDDEN have nobody to dismiss a
+ * dialog. The report still goes to stderr and to agb_crash.txt. */
+static int g_crashConsoleOnly;
+
 /* The control delivers state callbacks (progress/title/url/status) on the thread
  * that owns its window; the probe checks that once so a regression fails a suite
  * instead of showing up as an intermittent cross-thread AV (R185). */
@@ -6123,17 +6128,27 @@ static void shellAnnounceCrashFile(const char* file)
 {
     const char* opt = getenv("AGB_CRASH_POPUP");
     static volatile LONG announced;
+    int consoleOnly;
     char full[MAX_PATH];
     char msg[768];
     DWORD n;
 
-    if (g_probeMode) return;
     if (InterlockedExchange(&announced, 1) != 0) return;
-    if (opt && opt[0] && strcmp(opt, "0") == 0) return;
+
+    consoleOnly = g_crashConsoleOnly || g_probeMode ||
+                  (opt && opt[0] && strcmp(opt, "0") == 0);
 
     n = GetFullPathNameA(file, (DWORD)sizeof(full), full, NULL);
     if (n == 0 || n >= (DWORD)sizeof(full))
         lstrcpynA(full, file, (int)sizeof(full));
+
+    /* Headless/automation: the stack is already on stderr; say where the report
+     * is and never create a window the caller cannot dismiss. */
+    if (consoleOnly) {
+        fprintf(stderr, "[crash] report: %s\n", full);
+        fflush(stderr);
+        return;
+    }
 
     if (crashPageLaunch(file))
         return;
@@ -6169,10 +6184,73 @@ static void shellPrintFrames(int skip, int depth)
     }
 }
 
-/* One report per process. The vectored handler usually gets here first; the
- * unhandled filter may follow for the same exception and must not overwrite the
- * report or open a second page. */
-static void shellReportCrash(EXCEPTION_RECORD* rec)
+/* The crash report file this process writes.
+ *
+ * User runs and headless/test runs must never share a file: a suite crash would
+ * otherwise overwrite the report a user wants to attach to a bug. The timestamp
+ * then keeps two crashes in the same folder apart (a crash loop, two windows).
+ *
+ * Fixed buffers and a manual clock read: the handlers run with the process
+ * possibly half dead, and the vectored handler and the unhandled filter must
+ * name the same file, so it is built once and cached. */
+static const char* shellCrashReportName(void)
+{
+    static char name[64];
+
+    if (!name[0]) {
+        SYSTEMTIME now;
+        const char* base = g_crashConsoleOnly ? "agb_crash_test" : "agb_crash";
+        char* p = name;
+        const char* s;
+        unsigned stamp[6];
+        int widths[6] = { 4, 2, 2, 2, 2, 2 };
+        int i, d;
+
+        GetLocalTime(&now);
+        stamp[0] = now.wYear;
+        stamp[1] = now.wMonth;
+        stamp[2] = now.wDay;
+        stamp[3] = now.wHour;
+        stamp[4] = now.wMinute;
+        stamp[5] = now.wSecond;
+
+        for (s = base; *s; ++s)
+            *p++ = *s;
+        *p++ = '_';
+
+        /* yyyymmdd_hhmmss, zero padded, most significant digit first. */
+        for (i = 0; i < 6; ++i) {
+            unsigned div = 1;
+
+            if (i == 3)
+                *p++ = '_';
+
+            for (d = 1; d < widths[i]; ++d)
+                div *= 10;
+
+            for (d = 0; d < widths[i]; ++d) {
+                *p++ = (char)('0' + (stamp[i] / div) % 10);
+                div /= 10;
+            }
+        }
+
+        *p++ = '.';
+        *p++ = 't';
+        *p++ = 'x';
+        *p++ = 't';
+        *p = 0;
+    }
+
+    return name;
+}
+
+/* One report per process: the vectored handler usually gets here first and the
+ * unhandled filter may follow for the same exception, so the second writer must
+ * not overwrite the file. The dialog, on the other hand, belongs to the
+ * *unhandled* filter only: first-chance access violations are common inside
+ * GDI+ (it uses SEH for text/font fallbacks), and popping a crash page for one
+ * of those interrupted the user for an exception the process survived. */
+static void shellWriteCrashReport(EXCEPTION_RECORD* rec)
 {
     static volatile LONG reported;
 
@@ -6180,8 +6258,7 @@ static void shellReportCrash(EXCEPTION_RECORD* rec)
         return;
 
     /* Raw Win32 I/O and fixed buffers: the CRT can be what broke. */
-    crashReportWrite("agb_crash.txt", rec);
-    shellAnnounceCrashFile("agb_crash.txt");
+    crashReportWrite(shellCrashReportName(), rec);
 }
 
 /* First-chance dump: the unhandled-exception filter can be bypassed - ant
@@ -6216,7 +6293,7 @@ static LONG WINAPI shellVehHandler(EXCEPTION_POINTERS* ep)
     shellPrintFrames(1, 48);
     fflush(stderr);
 
-    shellReportCrash(rec);
+    shellWriteCrashReport(rec);
 
     /* Ask ant for the JS stack: without it the native frames only say
      * "JIT code". Resolved dynamically - the shell does not link antjsb. */
@@ -6262,7 +6339,8 @@ static LONG WINAPI shellCrashFilter(EXCEPTION_POINTERS* ep)
 
     shellPrintFrames(1, 48);
     fflush(stderr);
-    shellReportCrash(rec);
+    shellWriteCrashReport(rec);
+    shellAnnounceCrashFile(shellCrashReportName());
 
     /* Keep the OS behaviour (exit code 0xC0000005 etc.): let the default
      * handler / WER terminate the process. */
@@ -9793,11 +9871,14 @@ static void parseShellArgv(void)
         } else if (!strcmp(argv[i], "--crash-page") && i + 1 < argc) {
             strncpy(g_crashPagePath, argv[++i], sizeof(g_crashPagePath) - 1);
             g_crashPagePath[sizeof(g_crashPagePath) - 1] = 0;
+            g_crashConsoleOnly = 1;
         } else if (!strcmp(argv[i], "--probe")) {
             g_probeMode = 1;
+            g_crashConsoleOnly = 1;
         } else if (!strcmp(argv[i], "--ui-shot") && i + 1 < argc) {
             strncpy(g_uiShotPath, argv[++i], sizeof(g_uiShotPath) - 1);
             g_uiShotPath[sizeof(g_uiShotPath) - 1] = 0;
+            g_crashConsoleOnly = 1;
         } else if (!strcmp(argv[i], "--ui-dpi") && i + 1 < argc) {
             int dpi = atoi(argv[++i]);
 
@@ -11425,9 +11506,12 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR commandLine, 
 
     /* AGB_TEST_CRASH=1 proves the report/page round trip still works (the
      * handlers only matter when no debugger is attached). Kept out of the crash
-     * page process, which inherits the environment of the crashed one. */
-    if (getenv("AGB_TEST_CRASH"))
+     * page process, which inherits the environment of the crashed one. A test
+     * crash also writes the test report name, never the user's. */
+    if (getenv("AGB_TEST_CRASH")) {
+        g_crashConsoleOnly = 1;
         *(volatile int*)0 = 1;
+    }
 
     /* --ui-shot renders the chrome into a DIB and never creates a window. */
     if (g_uiShotPath[0])
@@ -11492,6 +11576,10 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR commandLine, 
         const char* hidden = getenv("AGB_SHELL_HIDDEN");
 
         g_shellHidden = hidden && hidden[0] && !(hidden[0] == '0' && hidden[1] == 0);
+
+        /* A hidden test shell must never own a modal crash page either. */
+        if (g_shellHidden)
+            g_crashConsoleOnly = 1;
     }
 
     registerShellWindowClass();

@@ -2,9 +2,10 @@
 # privacy-free.
 #
 # Runs a headless AGB_TEST_CRASH crash (AGB_CRASH_POPUP=0, so no page/window),
-# then asserts that agb_crash.txt carries the project URL, the mb132_x64.dll
-# SHA-256 and the sanitized launch args/env - while never echoing the startup URL,
-# profile path or user name.
+# then asserts that the report (agb_crash_test_<timestamp>.txt - test runs never
+# touch the user's agb_crash_<timestamp>.txt) carries the project URL, the
+# mb132_x64.dll SHA-256 and the sanitized launch args/env - while never echoing
+# the startup URL, profile path or user name.
 #
 #   pwsh -File tools\crash-report-check.ps1
 param(
@@ -19,7 +20,9 @@ if (-not (Test-Path $exe)) { throw "minishell.exe not found: $exe" }
 $work = Join-Path $env:TEMP 'mb-crash-report-check'
 Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $work | Out-Null
-$report = Join-Path $work 'agb_crash.txt'
+# Reports are named agb_crash[_test]_<timestamp>.txt: pick the one this run wrote.
+$reportPattern = Join-Path $work 'agb_crash_test_*.txt'
+$legacyPattern = Join-Path $work 'agb_crash*.txt'
 
 $env:AGB_TEST_CRASH = '1'
 $env:AGB_CRASH_POPUP = '0'
@@ -40,12 +43,19 @@ try {
         exit 1
     }
 
-    if (-not (Test-Path $report)) {
+    $report = Get-ChildItem $reportPattern -ErrorAction SilentlyContinue |
+        Sort-Object LastWriteTime | Select-Object -Last 1
+    if (-not $report) {
+        $report = Get-ChildItem $legacyPattern -ErrorAction SilentlyContinue |
+            Sort-Object LastWriteTime | Select-Object -Last 1
+    }
+
+    if (-not $report) {
         "FAIL: no crash report (exit $($shell.ExitCode))"
         exit 1
     }
 
-    $text = Get-Content $report -Raw
+    $text = Get-Content $report.FullName -Raw
     $problems = @()
 
     $pdb = Join-Path $root 'build-msvc\Release\minishell.pdb'
