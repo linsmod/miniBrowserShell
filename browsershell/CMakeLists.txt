@@ -10,6 +10,8 @@ set(SHELL_SOURCES
     src/main.c
     src/mb_view.c
     src/agb_log.c
+    src/crash_page.c
+    src/crash_report.c
     src/shot_png.c
     src/shell_ops.c
     src/ui_chrome.c
@@ -47,7 +49,8 @@ target_link_libraries(minishell PRIVATE
     gdi32
     shell32
     winhttp
-    advapi32)
+    advapi32
+    version)
 
 # Runtime payload: the DLL and the optional bundled fonts live next to the exe.
 add_custom_command(TARGET minishell POST_BUILD

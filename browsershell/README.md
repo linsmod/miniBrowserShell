@@ -98,6 +98,7 @@ Cookie / localStorage 都在这个目录下，每个标签共享同一 profile�
   改动即时生效并写入 `<profile>/prefs.txt`（主题仍在 `theme.txt`）
 - 下载：写入系统 Downloads（或 `--download-dir` 之外的默认目录），状态气泡显示进度/结果
 - 单实例 / `--new-tab` / `--new-window` 交接到已运行窗口
+- 崩溃：隐私无关的 `agb_crash.txt` + 独立的崩溃页（完整诊断、一键复制报告）
 
 ## 引擎启动竞态（导航守卫）
 
@@ -113,6 +114,22 @@ miniblink 偶尔会**静默丢掉一个新控件的第一次导航**：没有 `m
   （还是 5%）就销毁并重建该标签的控件，最多 2 次；仍无响应则停掉加载状态并提示。
 
 日志里表现为 `nav guard: engine never committed - rebuilding view ...`。
+
+## 崩溃报告
+
+崩溃时外壳在进程 CWD 写 `agb_crash.txt`（完整报告），并另起一个进程显示崩溃页：
+异常代码/地址、访问类型、完整调用栈（`模块+偏移`）、全部已加载模块及版本、系统版本、
+架构、DPI、进程存活时间。**报告不含隐私**：没有 URL、页面标题、文件路径、账号或机器名，
+只有模块名。页面上有一个 **Copy report** 按钮，复制出来的就是报告全文，可以直接贴到 issue；
+报告文件本身也可以作为附件。报告里的帧是 `模块+偏移`，维护者用对应版本的 PDB /
+`build-msvc/minishell.map` 还原符号。
+
+- `minishell.exe --crash-page <report>`：单独打开一个报告（崩溃处理器就是这么启动的），
+  不读 profile、不恢复会话。
+- `AGB_CRASH_POPUP=0`：只写报告，不显示页面。
+- `AGB_TEST_CRASH=1`：下一次启动立刻制造一个访问违例，用来验证整条链路；
+  配合 `AGB_SHELL_HIDDEN=1`（不显示窗口）和 `AGB_CRASH_PAGE_SAVE=1`（把崩溃页 HTML
+  存到 `%TEMP%\MiniShell-crash-page.html`）可以 headless 验证。
 
 ## 已知差异
 

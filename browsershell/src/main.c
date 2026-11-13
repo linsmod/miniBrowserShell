@@ -23,6 +23,8 @@
 
 #include "agave_webview.h"
 #include "agb_log.h"
+#include "crash_page.h"
+#include "crash_report.h"
 #include "shell_ops.h"
 #include "ui_chrome.h"
 #include "ui_inspect.h"
@@ -5857,15 +5859,18 @@ static const char* g_probeFindText;
  * page at all. The control has nowhere to run it: the run must report
  * on_command_dropped ("no page yet"), deterministically. */
 static const char* g_probeBeforeNavEval;
-/* GUI runs only: tell the user where the crash dump landed. The file name is
- * relative to the process CWD, so show the absolute path - the shell may have
- * been started from anywhere. */
+/* GUI runs only: open the crash report page in a fresh process.
+ *
+ * The report text is the artifact; the page is what makes it usable (scrollable,
+ * selectable, one Copy button) without depending on the crashed process still
+ * being able to draw. The file name is relative to the process CWD, so the
+ * fallback dialog shows the absolute path - the shell can be started anywhere. */
 static void shellAnnounceCrashFile(const char* file)
 {
     const char* opt = getenv("AGB_CRASH_POPUP");
     static volatile LONG announced;
     char full[MAX_PATH];
-    char msg[640];
+    char msg[768];
     DWORD n;
 
     if (g_probeMode) return;
@@ -5876,12 +5881,15 @@ static void shellAnnounceCrashFile(const char* file)
     if (n == 0 || n >= (DWORD)sizeof(full))
         lstrcpynA(full, file, (int)sizeof(full));
 
+    if (crashPageLaunch(file))
+        return;
+
     snprintf(msg, sizeof(msg),
              "MiniShell crashed and wrote the crash report here:\n\n%s\n\n"
-             "Frames are module+offset; symbolize with:\n"
-             "  pwsh -File tools\\cdb_stack.ps1 -Symbolize \"%s\"\n"
+             "The crash page could not be started. Attach that file when you "
+             "report the problem.\n"
              "Set AGB_CRASH_POPUP=0 to disable this dialog.",
-             full, full);
+             full);
 
     MessageBoxA(NULL, msg, "MiniShell crash", MB_OK | MB_ICONERROR | MB_TOPMOST | MB_SETFOREGROUND);
 }
@@ -5907,84 +5915,19 @@ static void shellPrintFrames(int skip, int depth)
     }
 }
 
-/* Module name for a frame. The old writer only knew the exe and two DLL names by
- * literal string, so every engine frame printed as "?+0x7fff..." and the report
- * could not be read at all once the process was gone. */
-static void crashFrameName(unsigned long long address, char* out, size_t cap,
-                           unsigned long long* offset)
+/* One report per process. The vectored handler usually gets here first; the
+ * unhandled filter may follow for the same exception and must not overwrite the
+ * report or open a second page. */
+static void shellReportCrash(EXCEPTION_RECORD* rec)
 {
-    HMODULE module = NULL;
-    wchar_t path[MAX_PATH];
-    wchar_t* base;
-    int i;
+    static volatile LONG reported;
 
-    if (!out || cap == 0)
+    if (InterlockedExchange(&reported, 1) != 0)
         return;
 
-    out[0] = 0;
-    *offset = address;
-
-    if (!GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS |
-                                GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
-                            (LPCWSTR)(uintptr_t)address, &module) || !module)
-        return;
-
-    if (!GetModuleFileNameW(module, path, MAX_PATH))
-        return;
-
-    base = wcsrchr(path, L'\\');
-    base = base ? base + 1 : path;
-
-    for (i = 0; base[i] && i + 1 < (int)cap; ++i) {
-        char c = (char)base[i];
-
-        /* Lowercase: "mb132_x64.dll+0x3fa1" reads better than the raw case. */
-        if (c >= 'A' && c <= 'Z')
-            c = (char)(c - 'A' + 'a');
-        out[i] = c;
-    }
-    out[i] = 0;
-
-    *offset = address - (unsigned long long)module;
-}
-
-/* The stderr stream may already be unusable when a crash happens on a worker
- * thread, so keep a file copy next to the working directory. */
-static void shellWriteCrashFile(EXCEPTION_RECORD* rec)
-{
-    FILE* f = fopen("agb_crash.txt", "w");
-
-    if (!f)
-        return;
-
-    fprintf(f, "thread=%lu code=0x%08lx addr=0x%llx",
-            (unsigned long)GetCurrentThreadId(),
-            (unsigned long)(rec ? rec->ExceptionCode : 0),
-            (unsigned long long)(rec ? (unsigned long long)rec->ExceptionAddress : 0));
-
-    if (rec && rec->NumberParameters >= 2)
-        fprintf(f, " info0=%llu info1=0x%llx",
-                (unsigned long long)rec->ExceptionInformation[0],
-                (unsigned long long)rec->ExceptionInformation[1]);
-
-    fprintf(f, "\n");
-
-    {
-        void* frames[64];
-        unsigned short count = CaptureStackBackTrace(1, 48, frames, NULL);
-        int i;
-
-        for (i = 0; i < (int)count; ++i) {
-            char name[96];
-            unsigned long long off = 0;
-
-            crashFrameName((unsigned long long)frames[i], name, sizeof(name), &off);
-            fprintf(f, "  #%02d %s+0x%llx\n", i, name[0] ? name : "?", off);
-        }
-    }
-
-    fflush(f);
-    fclose(f);
+    /* Raw Win32 I/O and fixed buffers: the CRT can be what broke. */
+    crashReportWrite("agb_crash.txt", rec);
+    shellAnnounceCrashFile("agb_crash.txt");
 }
 
 /* First-chance dump: the unhandled-exception filter can be bypassed - ant
@@ -5998,9 +5941,6 @@ static LONG WINAPI shellVehHandler(EXCEPTION_POINTERS* ep)
     static volatile LONG dumped;
     EXCEPTION_RECORD* rec = ep ? ep->ExceptionRecord : NULL;
     DWORD code = rec ? rec->ExceptionCode : 0;
-    char buf[8192];
-    int n = 0;
-    int i;
 
     if (code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_IN_PAGE_ERROR &&
         code != EXCEPTION_STACK_OVERFLOW && code != EXCEPTION_ILLEGAL_INSTRUCTION)
@@ -6009,50 +5949,20 @@ static LONG WINAPI shellVehHandler(EXCEPTION_POINTERS* ep)
     if (InterlockedExchange(&dumped, 1) != 0)
         return EXCEPTION_CONTINUE_SEARCH;
 
-    n += snprintf(buf + n, sizeof(buf) - (size_t)n,
-                  "[crash-firstchance] thread=%lu code=0x%08lx addr=0x%llx",
-                  (unsigned long)GetCurrentThreadId(), (unsigned long)code,
-                  (unsigned long long)(rec ? (unsigned long long)rec->ExceptionAddress : 0));
+    fprintf(stderr, "[crash-firstchance] thread=%lu code=0x%08lx addr=0x%llx",
+            (unsigned long)GetCurrentThreadId(), (unsigned long)code,
+            (unsigned long long)(rec ? (unsigned long long)rec->ExceptionAddress : 0));
 
     if (rec && rec->NumberParameters >= 2)
-        n += snprintf(buf + n, sizeof(buf) - (size_t)n, " info0=%llu info1=0x%llx",
-                      (unsigned long long)rec->ExceptionInformation[0],
-                      (unsigned long long)rec->ExceptionInformation[1]);
+        fprintf(stderr, " info0=%llu info1=0x%llx",
+                (unsigned long long)rec->ExceptionInformation[0],
+                (unsigned long long)rec->ExceptionInformation[1]);
 
-    n += snprintf(buf + n, sizeof(buf) - (size_t)n, "\n");
+    fprintf(stderr, "\n");
+    shellPrintFrames(1, 48);
+    fflush(stderr);
 
-    {
-        void* frames[64];
-        unsigned short count = CaptureStackBackTrace(1, 48, frames, NULL);
-        unsigned long long exe = (unsigned long long)GetModuleHandleA(NULL);
-        unsigned long long av  = (unsigned long long)GetModuleHandleA("libagave.dll");
-        unsigned long long ab  = (unsigned long long)GetModuleHandleA("antjsb.dll");
-
-        for (i = 0; i < (int)count && n < (int)sizeof(buf) - 64; ++i) {
-            unsigned long long a = (unsigned long long)frames[i];
-            const char* mod = "?";
-            unsigned long long off = a;
-
-            if (av && a >= av && a < av + 0x2000000ULL) { mod = "libagave"; off = a - av; }
-            else if (ab && a >= ab && a < ab + 0x2000000ULL) { mod = "antjsb"; off = a - ab; }
-            else if (exe && a >= exe && a < exe + 0x100000ULL) { mod = "exe"; off = a - exe; }
-
-            n += snprintf(buf + n, sizeof(buf) - (size_t)n, "  #%02d %s+0x%llx\n", i, mod, off);
-        }
-    }
-
-    {
-        HANDLE h = CreateFileA("agb_crash.txt", GENERIC_WRITE, FILE_SHARE_READ, NULL,
-                               CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-
-        if (h != INVALID_HANDLE_VALUE) {
-            DWORD wrote = 0;
-            WriteFile(h, buf, (DWORD)strlen(buf), &wrote, NULL);
-            CloseHandle(h);
-        }
-    }
-
-    shellAnnounceCrashFile("agb_crash.txt");
+    shellReportCrash(rec);
 
     /* Ask ant for the JS stack: without it the native frames only say
      * "JIT code". Resolved dynamically - the shell does not link antjsb. */
@@ -6072,10 +5982,9 @@ static LONG WINAPI shellVehHandler(EXCEPTION_POINTERS* ep)
 }
 
 /* Crash forensics: an AV that only happens outside the debugger (timing
- * sensitive UAFs, e.g. R67/R68) cannot be caught with cdb - attaching changes
- * the schedule and the bug disappears. This filter prints the faulting address
- * and the faulting thread's stack in the same "#NN module+0x..." shape as the
- * atexit trace, so tools/cdb_stack.ps1 -Symbolize can resolve it afterwards. */
+ * sensitive UAFs) cannot be caught with cdb - attaching changes the schedule
+ * and the bug disappears. The filter still prints the faulting address and the
+ * stack to stderr, then writes the same privacy-free report the page shows. */
 static LONG WINAPI shellCrashFilter(EXCEPTION_POINTERS* ep)
 {
     EXCEPTION_RECORD* rec = ep ? ep->ExceptionRecord : NULL;
@@ -6099,8 +6008,7 @@ static LONG WINAPI shellCrashFilter(EXCEPTION_POINTERS* ep)
 
     shellPrintFrames(1, 48);
     fflush(stderr);
-    shellWriteCrashFile(rec);
-    shellAnnounceCrashFile("agb_crash.txt");
+    shellReportCrash(rec);
 
     /* Keep the OS behaviour (exit code 0xC0000005 etc.): let the default
      * handler / WER terminate the process. */
@@ -6544,6 +6452,11 @@ static int probeCapture(const char* path)
 static int  g_showUsage;                        /* --help                     */
 static int  g_argError;                         /* --probe without a URL       */
 static char g_startupUrl[MAX_PATH_CHARS];       /* normalized, may be empty   */
+
+/* --crash-page <report>: show a crash report in its own minimal window. This
+ * process is started by the exception handler, so nothing below the report
+ * (profile, session, single instance, engine state) is touched. */
+static char g_crashPagePath[MAX_PATH_CHARS];
 
 /* --ui-shot: headless chrome render (no window, no engine, no profile). */
 static char g_uiShotPath[MAX_PATH_CHARS];
@@ -7234,8 +7147,8 @@ static int probeRun(const char* url)
 
     /* --device-scale: a headless run has no monitor to ask, so the DPI the GUI
      * would push through WM_DPICHANGED comes from the command line. It only
-     * describes the environment (the settings page / logs report it); the page's
-     * devicePixelRatio comes from --zoom, like in the real shell. */
+     * describes the environment (the settings page / logs / --shot-rect report
+     * it); page zoom is CSS zoom and does not change devicePixelRatio. */
     if (g_probeDeviceScale > 100)
         agave_webview_set_device_scale(g_probeView, g_probeDeviceScale);
 
@@ -7945,9 +7858,9 @@ static void probeUsage(void)
             "            after the page settled, then wait 400ms so the engine can\n"
             "            relayout before --eval reads the new viewport\n"
             "  --zoom <percent>  page zoom before --eval (10..500, default 100)\n"
-            "  --device-scale <percent>  display DPI for the page, as device pixels\n"
-            "            per CSS px in percent of 96 DPI (100..500, default 100).\n"
-            "            It multiplies with --zoom (both feed window.devicePixelRatio)\n"
+            "  --device-scale <percent>  display DPI the shell reports (100..500,\n"
+            "            default 100). The engine paints at the real window DPI; the\n"
+            "            value only feeds the settings page and the logs\n"
             "  --reload <n>  reload the page n times and run the eval after\n"
             "                every round (page lifecycle comparison)\n"
             "  --offline module fetches are served from the cache only\n"
@@ -7960,6 +7873,8 @@ static void probeUsage(void)
             "            a bare URL already means this (Chrome's default)\n"
             "  --new-window [URL]  same, but the running shell opens a new window in\n"
             "            its own process (no second browser process is started)\n"
+            "  --crash-page <report>  show a crash report in its own window (this is\n"
+            "            what the crash handler starts; it reads no profile)\n"
             "\n"
             "GUI: one shell per profile root. A second launch\n"
             "hands its URL to the running shell and exits; give a different\n"
@@ -9591,6 +9506,9 @@ static void parseShellArgv(void)
             g_newTabArg = 1;
         } else if (!strcmp(argv[i], "--new-window")) {
             g_newWindowArg = 1;
+        } else if (!strcmp(argv[i], "--crash-page") && i + 1 < argc) {
+            strncpy(g_crashPagePath, argv[++i], sizeof(g_crashPagePath) - 1);
+            g_crashPagePath[sizeof(g_crashPagePath) - 1] = 0;
         } else if (!strcmp(argv[i], "--probe")) {
             g_probeMode = 1;
         } else if (!strcmp(argv[i], "--ui-shot") && i + 1 < argc) {
@@ -11186,11 +11104,6 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR commandLine, 
     SetUnhandledExceptionFilter(shellCrashFilter);
     AddVectoredExceptionHandler(1, shellVehHandler);
 
-    /* AGB_TEST_CRASH=1 proves the filter and the symbolize round-trip still
-     * work (the handler only matters when no debugger is attached). */
-    if (getenv("AGB_TEST_CRASH"))
-        *(volatile int*)0 = 1;
-
     atexit(shellExitTrace);
     g_instance = instance;
     {
@@ -11218,6 +11131,19 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR commandLine, 
 
     if (g_argError)
         return PROBE_EXIT_USAGE;
+
+    /* --crash-page is its own tiny host: no profile, no session, no single
+     * instance, no restored tabs. It is started by the exception handler. */
+    if (g_crashPagePath[0]) {
+        g_exitTraceSuppressed = 1;   /* not a shell run: no exit stack trace */
+        return crashPageRun(g_crashPagePath);
+    }
+
+    /* AGB_TEST_CRASH=1 proves the report/page round trip still works (the
+     * handlers only matter when no debugger is attached). Kept out of the crash
+     * page process, which inherits the environment of the crashed one. */
+    if (getenv("AGB_TEST_CRASH"))
+        *(volatile int*)0 = 1;
 
     /* --ui-shot renders the chrome into a DIB and never creates a window. */
     if (g_uiShotPath[0])

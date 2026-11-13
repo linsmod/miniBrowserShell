@@ -38,6 +38,13 @@ MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webv
 | `tools/settings-check.ps1` | `minishell://settings` 的双向协议回归：页面请求 → 宿主回值 → 断言主题/搜索引擎/缩放/版本/下载目录都到位 |
 | `tools/zoom-check.ps1` | 页面缩放真的放大页面：每个 zoom 的着色高度 = 40px × zoom × 显示缩放，右边缘不被裁；dpr/innerWidth 仍按显示缩放 |
 | `tools/dlserver.ps1` | 下载/新窗口回归用的本地 HTTP 服务 |
+| `tools/hangserver.ps1` | 只 accept 不响应的 TCP 服务，用来触发"加载永不提交"和导航守卫 |
+
+崩溃链路（报告 → 崩溃页）可以 headless 验证，不要开窗口：
+`AGB_TEST_CRASH=1 AGB_CRASH_POPUP=0` 只写 `agb_crash.txt`；
+`AGB_SHELL_HIDDEN=1 AGB_CRASH_PAGE_SAVE=1 minishell.exe --crash-page <report>` 渲染崩溃页、
+把 HTML 存到 `%TEMP%\MiniShell-crash-page.html` 后自动退出。报告必须保持无隐私
+（模块名/偏移，不要路径和 URL）；崩溃页是独立进程，因为它可能正是坏掉的那部分。
 
 ## 引擎侧已知坑（会静默失败）
 
