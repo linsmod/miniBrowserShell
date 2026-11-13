@@ -1447,6 +1447,17 @@ static void switchTabWarm(int index)
         SetTimer(g_hwnd, WARM_TAB_TIMER, WARM_TAB_POLL_MS, NULL);
 }
 
+static int anyTabOpen(void)
+{
+    int i;
+
+    for (i = 0; i < MAX_TABS; ++i)
+        if (g_tabs[i].used)
+            return 1;
+
+    return 0;
+}
+
 static void closeTab(int index)
 {
     int i;
@@ -1497,6 +1508,16 @@ static void closeTab(int index)
 
     agbLog(AGB_LOG_SHELL, "tab close index=%d url=%s active=%d closed-saved=%d",
            index, url, wasActive, g_closedCount);
+
+    /* Last tab in this window: close the window, the way every browser does
+     * (with one window, that ends the process). Posted, not DestroyWindow():
+     * closeTab runs inside mouse/paint handlers and inside loops such as
+     * closeTabsToRight, so the window must go after the handler returns. */
+    if (!anyTabOpen()) {
+        agbLog(AGB_LOG_SHELL, "tab close: no tabs left, closing the window (pid=%lu)",
+               (unsigned long)GetCurrentProcessId());
+        PostMessageA(g_hwnd, WM_CLOSE, 0, 0);
+    }
 
     layoutAll();
     InvalidateRect(g_hwnd, NULL, TRUE);
@@ -12137,6 +12158,26 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR commandLine, 
         setActiveTab(g_activeTab);
     } else {
         createTab(initial);
+    }
+
+    /* Headless hook: extra tabs keep the window alive while a test closes the
+     * startup tab (see AGB_TEST_CLOSE_TAB_MS). The startup tab ends active, so
+     * that is the one the tests close. */
+    {
+        const char* extra = getenv("AGB_TEST_EXTRA_TABS");
+
+        if (extra && extra[0] && atoi(extra) > 0) {
+            int keep = g_activeTab;
+            int count = atoi(extra);
+            int i;
+
+            for (i = 0; i < count && i < 8; ++i)
+                createTab(NEW_TAB_URL);
+
+            setActiveTab(keep);
+            agbLog(AGB_LOG_SHELL, "test: %d extra tab(s), startup tab stays active",
+                   count);
+        }
     }
 
     if (!g_shellHidden) {

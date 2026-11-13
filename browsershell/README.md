@@ -91,7 +91,8 @@ Cookie / localStorage 都在这个目录下，每个标签共享同一 profile�
 
 ## 已实现的交互
 
-- 标签：新建 / 关闭 / 中键关闭 / 按下即切换 / 会话恢复；新标签页是 `minishell://newtab`
+- 标签：新建 / 关闭 / 中键关闭 / 按下即切换 / 会话恢复；新标签页是 `minishell://newtab`；
+  关掉窗口里最后一个标签会关闭该窗口（单窗口时即退出程序，和浏览器一致）
 - favicon：load 完后由页面报 `<link rel=icon>`，外壳用控件的 `agave_webview_fetch()`（引擎的代理/cookie/TLS）
   下载、WIC 解码（PNG/ICO）后画进标签；页面没声明就取 `/favicon.ico`，都没有才退回首字母色块。
   原始字节按页面 URL 缓存在 `<profile>/favicons/`，还原会话时标签先用缓存立刻显示图标，页面加载后再后台刷新

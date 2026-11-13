@@ -237,6 +237,7 @@ try {
     Start-Sleep -Milliseconds 400
     $before4 = if (Test-Path $log) { (Get-Content $log).Count } else { 0 }
     $env:AGB_TEST_CLOSE_TAB_MS = '1200'
+    $env:AGB_TEST_EXTRA_TABS = '1'
     $shell = Start-Process -FilePath $exe `
         -ArgumentList @('--userdata', (Join-Path $work 'profile-close'),
                         "http://127.0.0.1:$slowPort/slow.html") `
@@ -270,6 +271,7 @@ try {
     }
 
     Remove-Item Env:AGB_TEST_CLOSE_TAB_MS -ErrorAction SilentlyContinue
+    Remove-Item Env:AGB_TEST_EXTRA_TABS -ErrorAction SilentlyContinue
     if (-not $shell.HasExited) { Stop-Process -Id $shell.Id -Force -ErrorAction SilentlyContinue }
     $shell = $null
     Stop-Job $slowServer -ErrorAction SilentlyContinue
@@ -289,6 +291,7 @@ try {
         Remove-Job $slowServer -Force -ErrorAction SilentlyContinue
     }
     Remove-Item Env:AGB_TEST_CLOSE_TAB_MS -ErrorAction SilentlyContinue
+    Remove-Item Env:AGB_TEST_EXTRA_TABS -ErrorAction SilentlyContinue
     Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 }
 
