@@ -133,6 +133,13 @@ int                  restoreCache;   /* a hard reload turned the caches off */
     int                  ctxX, ctxY;
     int                  zoom;
     int                  visible;
+    /* Resize -> painted timing: set_rect records the size it asked for; the
+     * control's next WM_PAINT reports how long that took. has_frame() only says
+     * yes once a paint arrived for the current size (switchTabWarm uses it). */
+    int                  paintPending;
+    int                  paintW, paintH;
+    unsigned long long   paintTick;
+    int                  paintedW, paintedH;
     /* Device pixels at the parent window's left/right/bottom edge that resize
      * the window instead of reaching the page (0 = off). */
     int                  resizeEdge;
@@ -182,7 +189,9 @@ static void registerBackdropClass(void)
     wc.cbSize = sizeof(wc);
     wc.lpfnWndProc = DefWindowProcW;
     wc.hInstance = GetModuleHandleW(NULL);
-    wc.hbrBackground = CreateSolidBrush(RGB(32, 33, 36));
+    /* Debug colour: a tab whose page has not painted its first frame shows this
+     * vivid magenta, so the backdrop is easy to spot. */
+    wc.hbrBackground = CreateSolidBrush(RGB(255, 0, 255));
     wc.lpszClassName = L"MiniShellViewBackdrop";
     RegisterClassExW(&wc);
 }
@@ -1803,6 +1812,26 @@ static LRESULT CALLBACK mbvViewProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         }
         break;
 
+    /* Resize latency probe: the first paint after set_rect() logs how long the
+     * control needed to paint the requested size. The original proc still does
+     * the painting. */
+    case WM_PAINT:
+        if (v && v->paintPending) {
+            RECT client;
+            unsigned long long ms = GetTickCount64() - v->paintTick;
+
+            GetClientRect(hwnd, &client);
+            v->paintPending = 0;
+            v->paintedW = client.right;
+            v->paintedH = client.bottom;
+
+            agbLog(AGB_LOG_SHELL,
+                   "resize: painted %ldx%ld after %llu ms (asked %dx%d pid=%lu)",
+                   (long)client.right, (long)client.bottom, ms, v->paintW,
+                   v->paintH, (unsigned long)GetCurrentProcessId());
+        }
+        break;
+
     /* The engine swallows right-clicks when its own menu is disabled: no
      * WM_CONTEXTMENU ever reaches the host (verified on real input). The
      * control window itself still receives every WM_RBUTTONUP, and this
@@ -2144,11 +2173,26 @@ void agave_webview_set_user(AgaveWebView* view, void* user)
 void agave_webview_set_rect(AgaveWebView* view, int x, int y, int width, int height)
 {
     MbView* v = (MbView*)view;
+    int oldW;
+    int oldH;
 
     if (!v || !v->hwnd)
         return;
     if (width < 1)  width = 1;
     if (height < 1) height = 1;
+
+    oldW = v->rect.right - v->rect.left;
+    oldH = v->rect.bottom - v->rect.top;
+
+    if (width != oldW || height != oldH) {
+        /* Timed by the next WM_PAINT (see mbvViewProc). */
+        v->paintPending = 1;
+        v->paintW = width;
+        v->paintH = height;
+        v->paintTick = GetTickCount64();
+        agbLog(AGB_LOG_SHELL, "resize: request %dx%d (was %dx%d pid=%lu)", width,
+               height, oldW, oldH, (unsigned long)GetCurrentProcessId());
+    }
 
     v->rect.left = x;
     v->rect.top = y;
@@ -2163,7 +2207,7 @@ void agave_webview_set_rect(AgaveWebView* view, int x, int y, int width, int hei
      * child window (mbResize on a window-mode view only changes w/h). */
     SetWindowPos(v->hwnd, NULL, x, y, width, height,
                  SWP_NOZORDER | SWP_NOACTIVATE);
-    mbResize(v->wv, width, height);
+    /* mbResize(v->wv, width, height); */
 }
 
 void* agave_webview_hwnd(AgaveWebView* view)
