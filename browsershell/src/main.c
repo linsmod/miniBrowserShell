@@ -28,6 +28,7 @@
 #include "crash_report.h"
 #include "shell_ops.h"
 #include "ui_chrome.h"
+#include "ui_favicon.h"
 #include "ui_inspect.h"
 #include "ui_menu.h"
 #include "ui_menu_host.h"
@@ -116,6 +117,18 @@ typedef struct {
     int           hangPending;
     unsigned int  hangMs;
     char          hangStack[MAX_PATH_CHARS];
+    /* The site's favicon, decoded by ui_favicon.c from the bytes the engine
+     * delivered (on_favicon). Freed on navigation and on tab close; NULL means
+     * the strip paints the letter chip. */
+    UiFavicon*    icon;
+    /* Favicon download state: the page URL the icon belongs to, the candidate
+     * list the page reported (newline separated, /favicon.ico last) and how far
+     * the chain has got. One request at a time; see requestFavicon(). */
+    char          iconPage[MAX_PATH_CHARS];
+    char          iconCandidates[768];
+    int           iconNext;
+    int           iconTried;
+    int           iconFetching;
     /* Last Page Visibility value handed to the control (-1 = never sent), so a
      * resize/minimize does not queue a visibility command per WM_SIZE. */
     int           visibilitySent;
@@ -249,6 +262,17 @@ static void enterTabWindow(Tab* tab)
 {
     if (tab && tab->window)
         g_cur = (ShellWindow*)tab->window;
+}
+
+/* Drop a tab's decoded favicon (navigation, close, view rebuild). The model
+ * snapshot borrows the pointer, so it is rebuilt by the next syncChrome(). */
+static void tabClearIcon(Tab* tab)
+{
+    if (!tab || !tab->icon)
+        return;
+
+    uiFaviconFree(tab->icon);
+    tab->icon = NULL;
 }
 
 /* Who owns the keyboard. The page is a separate child window, so the shell has
@@ -998,6 +1022,7 @@ static void syncChrome(void)
                   g_tabs[i].title[0] ? g_tabs[i].title : "New tab");
         _snprintf(model->tabs[i].url, sizeof(model->tabs[i].url), "%s", g_tabs[i].url);
         model->tabs[i].hung = g_tabs[i].hangPending;
+        model->tabs[i].icon = g_tabs[i].icon;
     }
 
     model->address[sizeof(model->address) - 1] = 0;
@@ -1431,6 +1456,8 @@ static void closeTab(int index)
     strncpy(url, g_tabs[index].url, sizeof(url) - 1);
     url[sizeof(url) - 1] = 0;
 
+    tabClearIcon(&g_tabs[index]);
+
     /* Remember the page so ctrl+shift+T can reopen it. */
     if (g_tabs[index].url[0] && strcmp(g_tabs[index].url, "about:blank") != 0) {
         if (g_closedCount == MAX_CLOSED_TABS) {
@@ -1572,6 +1599,18 @@ static void onUrl(AgaveWebView* view, const char* url, void* user)
 
     enterTabWindow(tab);
 
+    /* A new document drops the previous site's icon: the old one must not sit
+     * on a tab while the new page loads. The engine sends the new icon once it
+     * has it (on_favicon) or requestFavicon() fetches it after the load. */
+    if (strcmp(tab->url, url) != 0) {
+        tabClearIcon(tab);
+        tab->iconPage[0] = 0;
+        tab->iconCandidates[0] = 0;
+        tab->iconNext = 0;
+        tab->iconTried = 0;
+        tab->iconFetching = 0;
+    }
+
     strncpy(tab->url, url, MAX_PATH_CHARS - 1);
     tab->url[MAX_PATH_CHARS - 1] = 0;
 
@@ -1589,6 +1628,9 @@ static void onUrl(AgaveWebView* view, const char* url, void* user)
         recordHistory(tab->url);
     }
 }
+
+static void requestFavicon(Tab* tab);
+static void startFaviconFetch(Tab* tab, const char* pageCandidates);
 
 static void onProgress(AgaveWebView* view, int percent, int finished, void* user)
 {
@@ -1608,6 +1650,10 @@ static void onProgress(AgaveWebView* view, int percent, int finished, void* user
      * either one proves the engine is working on this navigation. */
     if (finished || percent >= 10)
         navGuardSettled(tab);
+
+    /* The document is complete: it can report its icons now. */
+    if (finished)
+        requestFavicon(tab);
 
     if (tab == &g_tabs[g_activeTab])
         updateStatus();
@@ -1652,6 +1698,13 @@ static void onPageMessage(AgaveWebView* view, const char* message, void* user)
      * tab is activated). Read-only, so a background tab gets it too. */
     if (!strncmp(message, "__agb_newtab_get__", 18)) {
         newTabSendTheme(view);
+        return;
+    }
+
+    /* The page reported its <link rel=icon> URLs after the load finished (see
+     * requestFavicon). Read-only and answered for the tab that asked. */
+    if (!strncmp(message, "__agb_favicon__", 15)) {
+        startFaviconFetch(tab, message + 15);
         return;
     }
 
@@ -1838,6 +1891,244 @@ static void onStatus(AgaveWebView* view, const char* text, void* user)
 
     if (tab == &g_tabs[g_activeTab])
         updateStatus();
+}
+
+/* --- favicons ------------------------------------------------------------
+ * This engine has no favicon downloader of its own: mbOnNetGetFavicon() exists
+ * but is a stub in the shipped build (nothing ever calls the callback, and a
+ * page load makes no request for the icon). The shell therefore asks the page
+ * for its <link rel=icon> URLs and downloads the bytes through
+ * agave_webview_fetch(), which uses the same network stack as a navigation
+ * (proxy, cookies, TLS). /favicon.ico is the last candidate, which is what
+ * browsers do for pages that declare nothing. */
+
+/* Runs after the load finished: reports the icon URLs to the host (empty line
+ * when the page declares none). */
+static const char kFaviconProbeJs[] =
+    "(function(){"
+    "var out=[],l=document.querySelectorAll('link[rel]');"
+    "for(var i=0;i<l.length;i++){"
+    "var r=(l[i].getAttribute('rel')||'').toLowerCase();"
+    "if(r.indexOf('icon')<0)continue;"
+    "var h=l[i].href||'';"
+    "if(!h||h.indexOf('data:')===0||/\\.svg(\\?|$)/i.test(h))continue;"
+    "out.push(h);"
+    "}"
+    "try{agavePostMessage('__agb_favicon__'+out.join('\\n'));}catch(e){}"
+    "})();";
+
+/* "https://host/path?x" -> "https://host/favicon.ico" */
+static int faviconFallbackUrl(const char* pageUrl, char* out, size_t cap)
+{
+    const char* authority;
+    const char* end;
+    size_t schemeLen;
+    size_t prefix;
+
+    if (!pageUrl || !out || cap < 16)
+        return 0;
+
+    if (!strncmp(pageUrl, "http://", 7))
+        schemeLen = 7;
+    else if (!strncmp(pageUrl, "https://", 8))
+        schemeLen = 8;
+    else
+        return 0;
+
+    authority = pageUrl + schemeLen;
+    end = authority + strcspn(authority, "/?#");
+    if (end == authority)
+        return 0;
+
+    prefix = (size_t)(end - pageUrl);
+    if (prefix + 13 > cap)          /* "/favicon.ico" + NUL */
+        return 0;
+
+    memcpy(out, pageUrl, prefix);
+    memcpy(out + prefix, "/favicon.ico", 13);
+    return 1;
+}
+
+static void faviconNext(Tab* tab);
+
+/* One candidate finished (UI thread). Decode it; on failure try the next. */
+static void onFaviconFetched(AgaveWebView* view, void* user, const char* url,
+                             const void* data, int size)
+{
+    Tab* tab = (Tab*)user;
+    UiFavicon* icon;
+
+    (void)view;
+
+    if (!tab || !tab->used || !tab->view)
+        return;
+
+    tab->iconFetching = 0;
+
+    /* The user navigated while the icon was downloading: the result belongs to
+     * a page that is gone, and the new page will ask for its own icon. */
+    if (!tab->iconPage[0] || strcmp(tab->iconPage, tab->url) != 0)
+        return;
+
+    if (data && size > 0) {
+        icon = uiFaviconDecode(data, size);
+
+        if (icon) {
+            if (tab->icon)
+                uiFaviconFree(tab->icon);
+            tab->icon = icon;
+
+            agbLog(AGB_LOG_SHELL, "favicon: %dx%d from %s (%d bytes, pid=%lu)",
+                   uiFaviconWidth(icon), uiFaviconHeight(icon), url ? url : "",
+                   size, (unsigned long)GetCurrentProcessId());
+
+            syncChrome();
+            InvalidateRect(g_hwnd, &g_cur->chrome.tabstrip.rect, FALSE);
+            return;
+        }
+
+        agbLog(AGB_LOG_SHELL, "favicon: %d bytes from %s did not decode",
+               size, url ? url : "");
+    }
+
+    ++tab->iconNext;
+    faviconNext(tab);
+}
+
+/* Fetch the next candidate in tab->iconCandidates (offset tab->iconNext). */
+static void faviconNext(Tab* tab)
+{
+    char url[MAX_PATH_CHARS];
+    char* line;
+    char* newline;
+    size_t length;
+
+    if (!tab || !tab->used || !tab->view || tab->icon || tab->iconFetching)
+        return;
+
+    line = tab->iconCandidates + tab->iconNext;
+    if (!line[0])
+        return;                     /* chain exhausted: keep the letter chip */
+
+    newline = strchr(line, '\n');
+    length = newline ? (size_t)(newline - line) : strlen(line);
+    if (length >= sizeof(url))
+        length = sizeof(url) - 1;
+
+    memcpy(url, line, length);
+    url[length] = 0;
+
+    tab->iconNext += (int)length + (newline ? 1 : 0);
+    tab->iconFetching = 1;
+
+    if (!url[0] || !agave_webview_fetch(tab->view, url, onFaviconFetched, tab)) {
+        tab->iconFetching = 0;
+        faviconNext(tab);
+    }
+}
+
+/* Starts the download chain: the page's own list, then /favicon.ico. */
+static void startFaviconFetch(Tab* tab, const char* pageCandidates)
+{
+    size_t used;
+    char fallback[MAX_PATH_CHARS];
+
+    if (!tab || !tab->used || !tab->view || tab->icon)
+        return;
+    if (!tab->iconPage[0] || strcmp(tab->iconPage, tab->url) != 0)
+        return;                     /* the page navigated away meanwhile */
+
+    _snprintf(tab->iconCandidates, sizeof(tab->iconCandidates), "%s",
+              pageCandidates ? pageCandidates : "");
+    tab->iconCandidates[sizeof(tab->iconCandidates) - 1] = 0;
+
+    if (faviconFallbackUrl(tab->url, fallback, sizeof(fallback))) {
+        used = strlen(tab->iconCandidates);
+        _snprintf(tab->iconCandidates + used, sizeof(tab->iconCandidates) - used,
+                  "%s%s", used ? "\n" : "", fallback);
+    }
+
+    tab->iconNext = 0;
+    tab->iconTried = 1;
+
+    agbLog(AGB_LOG_SHELL, "favicon: fetching for %s (page icons=%s pid=%lu)",
+           tab->url, pageCandidates && pageCandidates[0] ? "declared" : "fallback",
+           (unsigned long)GetCurrentProcessId());
+    faviconNext(tab);
+}
+
+/* A main-frame load finished: ask the page which icons it names. */
+static void requestFavicon(Tab* tab)
+{
+    if (!tab || !tab->used || !tab->view)
+        return;
+    if (!tab->url[0])
+        return;
+    if (strncmp(tab->url, "http://", 7) && strncmp(tab->url, "https://", 8))
+        return;                     /* internal pages keep the letter chip */
+    if (tab->icon && !strcmp(tab->iconPage, tab->url))
+        return;
+    if (tab->iconTried && !strcmp(tab->iconPage, tab->url))
+        return;
+
+    /* Called from loading-finish: the document exists, even when the engine
+     * skipped mbOnDocumentReady (it does for a plain, fast page - docReady is
+     * only set from that callback). Eval is safe here; queuing a script before
+     * a document exists is what the has_document() guard protects against. */
+    strncpy(tab->iconPage, tab->url, sizeof(tab->iconPage) - 1);
+    tab->iconPage[sizeof(tab->iconPage) - 1] = 0;
+    tab->iconTried = 0;
+
+    agbLog(AGB_LOG_SHELL, "favicon: asking the page for icons (%s pid=%lu)",
+           tab->url, (unsigned long)GetCurrentProcessId());
+    agave_webview_eval(tab->view, kFaviconProbeJs);
+}
+
+/* The engine downloaded the page's icon: decode it here (UI thread, WIC) and
+ * paint it in the tab strip. A page without a usable icon keeps the letter
+ * chip, so a failed decode is not an error. */
+static void onFavicon(AgaveWebView* view, const char* url, const void* data,
+                      int size, void* user)
+{
+    Tab* tab = (Tab*)user;
+    UiFavicon* icon;
+
+    (void)view;
+
+    if (!tab || !tab->used || !data || size <= 0)
+        return;
+
+    icon = uiFaviconDecode(data, size);
+
+    if (!icon) {
+        agbLog(AGB_LOG_SHELL, "favicon: %d bytes could not be decoded (%s pid=%lu)",
+               size, url && url[0] ? url : "no url",
+               (unsigned long)GetCurrentProcessId());
+        return;
+    }
+
+    enterTabWindow(tab);
+
+    if (tab->icon)
+        uiFaviconFree(tab->icon);
+    tab->icon = icon;
+
+    /* Claim this icon for the current page so requestFavicon() does not fetch
+     * it again. */
+    strncpy(tab->iconPage, tab->url, sizeof(tab->iconPage) - 1);
+    tab->iconPage[sizeof(tab->iconPage) - 1] = 0;
+    tab->iconTried = 1;
+
+    agbLog(AGB_LOG_SHELL, "favicon: %dx%d from %s (%d bytes pid=%lu)",
+           uiFaviconWidth(icon), uiFaviconHeight(icon),
+           url && url[0] ? url : "no url", size,
+           (unsigned long)GetCurrentProcessId());
+
+    /* Only the strip changed: that keeps the page undamaged even while it is
+     * still painting its first frames. The model is a snapshot, so refresh it
+     * first - painting reads the model, not the Tab array. */
+    syncChrome();
+    InvalidateRect(g_hwnd, &g_cur->chrome.tabstrip.rect, FALSE);
 }
 
 /* The engine process of this tab died. Leave a page the user can read and
@@ -3592,6 +3883,7 @@ static int createTabIn(int index, const char* url)
         return 0;
 
     tab = &g_tabs[index];
+    tabClearIcon(tab);
     memset(tab, 0, sizeof(Tab));
     memset(&callbacks, 0, sizeof(callbacks));
 
@@ -3600,6 +3892,7 @@ static int createTabIn(int index, const char* url)
     callbacks.on_progress = onProgress;
     callbacks.on_status = onStatus;
     callbacks.on_message = onPageMessage;
+    callbacks.on_favicon = onFavicon;
     callbacks.on_focus = onViewFocus;
     callbacks.on_error = onError;
     callbacks.on_crashed = onCrashed;
@@ -6798,6 +7091,7 @@ static int  g_uiShotHeight = 760;
 static unsigned g_uiShotDpi = 96;
 static int  g_uiShotMenu;          /* --ui-menu: paint the sample app menu */
 static int  g_uiShotFocus;         /* --ui-focus: address pill owns focus */
+static char g_uiShotFaviconPath[MAX_PATH_CHARS];  /* --ui-favicon: tab icon fixture */
 
 static void probePrint(const char* tag, const char* text)
 {
@@ -8175,6 +8469,8 @@ static void probeUsage(void)
             "            --ui-size WxH, --ui-menu (paint and assert the self-drawn\n"
             "            app menu, including its Bookmarks submenu), --ui-focus\n"
             "            (address pill focused: ring and fill assertions).\n"
+            "            --ui-favicon <file> decodes a real icon (PNG/ICO) and\n"
+            "            asserts the first tab painted it.\n"
             "            Exit 0 only when every check passes (UI_SHOT PASS).\n"
             "  --shot-rect <x,y,w,h>  crop the capture to a CSS-pixel rect\n"
             "            (origin at the viewport's top-left, i.e. the values\n"
@@ -8529,6 +8825,7 @@ static int uiShotMain(void)
     UiChromeCallbacks callbacks;
     UiThemeKind kind = UI_THEME_LIGHT;
     BITMAPINFO info;
+    UiFavicon* favicon = NULL;
     HDC screen;
     HDC memory;
     HBITMAP bitmap;
@@ -8561,6 +8858,41 @@ static int uiShotMain(void)
 
     uiChromeInit(&chrome, kind, g_uiShotDpi, 1, &callbacks);
     shotFillModel(&chrome.model);
+
+    /* --ui-favicon: decode a real icon file and put it on the first tab. This
+     * exercises the same decoder/painter the shell uses when the engine hands
+     * over a page's icon, and the pixel check below proves it reached the tab. */
+    if (g_uiShotFaviconPath[0]) {
+        FILE* file = fopen(g_uiShotFaviconPath, "rb");
+
+        if (file) {
+            unsigned char* bytes;
+            long length;
+
+            fseek(file, 0, SEEK_END);
+            length = ftell(file);
+            fseek(file, 0, SEEK_SET);
+
+            if (length > 0 && length <= 1024 * 1024) {
+                bytes = (unsigned char*)malloc((size_t)length);
+
+                if (bytes && fread(bytes, 1, (size_t)length, file) == (size_t)length)
+                    favicon = uiFaviconDecode(bytes, (int)length);
+
+                free(bytes);
+            }
+            fclose(file);
+        }
+
+        if (favicon) {
+            chrome.model.tabs[0].icon = favicon;
+            printf("ui-favicon decoded %dx%d from %s\n", uiFaviconWidth(favicon),
+                   uiFaviconHeight(favicon), g_uiShotFaviconPath);
+        } else {
+            printf("ui-favicon could not decode %s\n", g_uiShotFaviconPath);
+            uiCheck("tab-favicon-decoded", 0);
+        }
+    }
 
     /* Buttons take their enabled state from the model (can_back / can_forward);
      * without this sync every button drew as enabled, so the sample could never
@@ -8632,6 +8964,21 @@ static int uiShotMain(void)
                            &chrome.toolbar.back.rect, chrome.theme.icon, 6) > 0 &&
             shotCountColor((const unsigned char*)bits, width, height,
                            &chrome.toolbar.forward.rect, chrome.theme.icon, 6) == 0);
+
+    if (favicon) {
+        unsigned rgb = 0;
+        int pixels = 0;
+
+        if (uiFaviconPixel(favicon, uiFaviconWidth(favicon) / 2,
+                           uiFaviconHeight(favicon) / 2, &rgb))
+            pixels = shotCountColor((const unsigned char*)bits, width, height,
+                                    &chrome.tabstrip.tab[0], rgb, 8);
+
+        uiCheck("tab-favicon-painted", pixels > 30);
+        printf("ui-favicon tab0=%d,%d %dx%d centre=#%06x pixels=%d\n",
+               chrome.tabstrip.tab[0].x, chrome.tabstrip.tab[0].y,
+               chrome.tabstrip.tab[0].w, chrome.tabstrip.tab[0].h, rgb, pixels);
+    }
 
     stride = width * 4;
     {
@@ -9741,6 +10088,17 @@ static int uiShotMain(void)
     DeleteObject(bitmap);
     DeleteDC(memory);
     ReleaseDC(NULL, screen);
+
+    /* The model only borrows the icon: clear it before the icon goes away, and
+     * free after the last uiChromePaint() above. Freeing it next to the pixel
+     * check left the model pointing at freed GDI+ memory for the hover/press
+     * repaints and crashed inside gdiplus. */
+    if (favicon) {
+        chrome.model.tabs[0].icon = NULL;
+        uiFaviconFree(favicon);
+        favicon = NULL;
+    }
+
     uiChromeFree(&chrome);
 
     printf("UI_SHOT %s checks=%d fails=%d file=%s\n",
@@ -9913,6 +10271,9 @@ static void parseShellArgv(void)
             }
         } else if (!strcmp(argv[i], "--ui-menu")) {
             g_uiShotMenu = 1;
+        } else if (!strcmp(argv[i], "--ui-favicon") && i + 1 < argc) {
+            strncpy(g_uiShotFaviconPath, argv[++i], sizeof(g_uiShotFaviconPath) - 1);
+            g_uiShotFaviconPath[sizeof(g_uiShotFaviconPath) - 1] = 0;
         } else if (!strcmp(argv[i], "--ui-focus")) {
             g_uiShotFocus = 1;
         } else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {

@@ -10,6 +10,7 @@
 #define AGAVE_UI_WIDGETS_H
 
 #include "ui_theme.h"
+#include "ui_favicon.h"
 
 /* Chrome keeps all tabs in the strip (it scrolls); we keep all of them too and
  * reach the ones that no longer fit through the tab-search popup. */
@@ -20,6 +21,10 @@ typedef struct {
     char title[256];
     char url[512];
     int  hung;
+    /* The decoded favicon the shell keeps for this tab, or NULL: the strip then
+     * falls back to the letter chip. The model never owns it (tab close/navigation
+     * frees it), so it is only valid during this snapshot. */
+    const UiFavicon* icon;
 } UiTabModel;
 
 /* Snapshot filled by the shell's syncChrome() once per frame/event. */

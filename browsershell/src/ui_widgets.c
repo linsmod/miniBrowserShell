@@ -124,11 +124,17 @@ static void fillTabPill(UiPainter* painter, const UiTheme* theme, UiRect rect,
 }
 
 static void paintFavicon(UiPainter* painter, const UiTheme* theme,
-                         UiRect rect, const char* url, const char* title)
+                         UiRect rect, const UiFavicon* icon, const char* url,
+                         const char* title)
 {
     unsigned color = faviconColor(url);
     wchar_t letter[2];
     UiRect text;
+
+    if (icon) {
+        uiFaviconPaint(painter, icon, rect);
+        return;
+    }
 
     uiFillRoundRect(painter, rect, uiThemeScale(theme, 4), color);
 
@@ -143,7 +149,7 @@ static void paintFavicon(UiPainter* painter, const UiTheme* theme,
 void uiFaviconChip(UiPainter* painter, const UiTheme* theme,
                    UiRect rect, const char* url, const char* title)
 {
-    paintFavicon(painter, theme, rect, url, title);
+    paintFavicon(painter, theme, rect, NULL, url, title);
 }
 
 static void paintTabClose(UiPainter* painter, const UiTheme* theme,
@@ -700,7 +706,7 @@ static void paintTab(UiPainter* painter, const UiTheme* theme,
         if (icon < icon_full)
             favicon.x = rect.x + (rect.w - close_w - icon) / 2;
 
-        paintFavicon(painter, theme, favicon,
+        paintFavicon(painter, theme, favicon, model->tabs[index].icon,
                      model->tabs[index].url, model->tabs[index].title);
 
         if (model->tabs[index].hung && icon >= uiThemeScale(theme, 12))

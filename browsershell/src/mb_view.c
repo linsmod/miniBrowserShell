@@ -51,6 +51,10 @@ enum {
     MBV_EV_ERROR,
     MBV_EV_DOCREADY,
     MBV_EV_MESSAGE,
+    /* Encoded favicon bytes (`bin`), see mbvOnFavicon. */
+    MBV_EV_FAVICON,
+    /* A host fetch finished (`p` = MvFetch*, owned by the dispatcher). */
+    MBV_EV_FETCH,
     /* A popup the shell refused: destroyed later, never from inside the engine's
      * onCreateView callback (that crashed the next window.open). */
     MBV_EV_DESTROY,
@@ -65,7 +69,28 @@ typedef struct MbEvent {
     char* b;
     int   n1;
     int   n2;
+    /* Binary payload (favicon bytes): copied by postEventBin, freed by the
+     * dispatcher after the callback returns. */
+    void* bin;
+    int   binLen;
+    /* Opaque payload handed to the dispatcher (a finished host fetch). */
+    void* ptr;
 } MbEvent;
+
+/* A host-initiated request (agave_webview_fetch) still in flight. It has no
+ * relationship to the document, so it survives a navigation; only destroying
+ * the control cancels it. */
+typedef struct MvFetch {
+    struct MbView* v;            /* NULL once the control is being destroyed */
+    AgaveWebViewFetchFn done;
+    void* user;
+    char  url[2048];
+    char* data;
+    int   len;
+    int   failed;
+    int   cancelled;
+    int   requestId;
+} MvFetch;
 
 #define MBV_PROFILE_MAX   MAX_PATH
 
@@ -83,6 +108,8 @@ struct MbView {
 
     char                 url[4096];
     char                 title[1024];
+    /* The one host fetch in flight (agave_webview_fetch), cancelled on destroy. */
+    MvFetch*             fetch;
     int                  canBack;
     int                  canForward;
     int                  loading;
@@ -411,6 +438,22 @@ static void viewMarkDestroyed(MbView* v)
     /* Downloads keep their own reference, so the view stays allocated until
      * the last job finishes; the flag stops callbacks from touching the UI. */
     v->destroying = 1;
+
+    /* A host fetch is independent of the document but its terminal callback
+     * lands on the loader thread and would post to a window that is going
+     * away. Cancel it; the callback (if the engine still sends one) sees
+     * v == NULL and releases the job. */
+    if (v->fetch) {
+        MvFetch* f = v->fetch;
+
+        v->fetch = NULL;
+        f->v = NULL;
+        f->cancelled = 1;
+        if (f->requestId) {
+            mbNetCancelWebUrlRequest(f->requestId);
+            f->requestId = 0;
+        }
+    }
 }
 
 /* Defined next to agave_webview_destroy(); runs on the UI thread once a retired
@@ -586,9 +629,72 @@ static void postEvent(MbView* v, int type, const char* a, const char* b,
     if (!PostMessageW(v->hwnd, MBV_CB_MESSAGE, 0, (LPARAM)e)) {
         free(e->a);
         free(e->b);
+        free(e->bin);
         free(e);
     }
 }
+
+/* Same queue, with an owned binary payload (favicon bytes). */
+static void postEventBin(MbView* v, int type, const char* a, const void* bin,
+                         int binLen)
+{
+    MbEvent* e;
+
+    if (!v || !bin || binLen <= 0 || (v->destroying) || !v->hwnd)
+        return;
+
+    e = (MbEvent*)calloc(1, sizeof(*e));
+    if (!e)
+        return;
+
+    e->type = type;
+    if (a) {
+        size_t n = strlen(a) + 1;
+
+        e->a = (char*)malloc(n);
+        if (e->a)
+            memcpy(e->a, a, n);
+    }
+    e->bin = malloc((size_t)binLen);
+    if (!e->bin) {
+        free(e->a);
+        free(e);
+        return;
+    }
+    memcpy(e->bin, bin, (size_t)binLen);
+    e->binLen = binLen;
+
+    if (!PostMessageW(v->hwnd, MBV_CB_MESSAGE, 0, (LPARAM)e)) {
+        free(e->a);
+        free(e->bin);
+        free(e);
+    }
+}
+
+/* Same queue, carrying an opaque pointer (a finished host fetch). */
+static void postEventPtr(MbView* v, int type, void* ptr)
+{
+    MbEvent* e;
+
+    if (!v || !ptr || !v->hwnd)
+        return;
+
+    e = (MbEvent*)calloc(1, sizeof(*e));
+    if (!e) {
+        free(ptr);
+        return;
+    }
+
+    e->type = type;
+    e->ptr = ptr;
+
+    if (!PostMessageW(v->hwnd, MBV_CB_MESSAGE, 0, (LPARAM)e)) {
+        free(e->ptr);
+        free(e);
+    }
+}
+
+static void mbvFetchRelease(MvFetch* f);
 
 static void deliverEvent(MbView* v, MbEvent* e)
 {
@@ -643,6 +749,18 @@ static void deliverEvent(MbView* v, MbEvent* e)
     case MBV_EV_PROGRESS:
         v->loading = e->n2 ? 0 : 1;
         v->progress = e->n1;
+
+        /* Some documents never report mbOnDocumentReady (a plain, fast page:
+         * the callback is missing entirely). The load finished, so the document
+         * exists - install the page helpers now instead of leaving the page
+         * without agavePostMessage (favicon probe, find, inspect). */
+        if (e->n2 && !v->docReady) {
+            v->docReady = 1;
+            if (v->zoom != 100)
+                viewApplyEngineScale(v);
+            injectPrelude(v);
+        }
+
         if (v->cb.on_progress)
             v->cb.on_progress((AgaveWebView*)v, v->progress, e->n2, v->user);
         break;
@@ -679,6 +797,26 @@ static void deliverEvent(MbView* v, MbEvent* e)
         if (v->cb.on_message)
             v->cb.on_message((AgaveWebView*)v, e->a ? e->a : "", v->user);
         break;
+
+    case MBV_EV_FAVICON:
+        if (v->cb.on_favicon)
+            v->cb.on_favicon((AgaveWebView*)v, e->a ? e->a : "", e->bin,
+                             e->binLen, v->user);
+        break;
+
+    case MBV_EV_FETCH: {
+        MvFetch* f = (MvFetch*)e->ptr;
+
+        if (f) {
+            if (f->done)
+                f->done((AgaveWebView*)v, f->user, f->url,
+                        f->failed ? NULL : (const void*)f->data,
+                        f->failed ? 0 : f->len);
+            mbvFetchRelease(f);
+        }
+        e->ptr = NULL;
+        break;
+    }
 
     case MBV_EV_DESTROY:
         /* The popup was refused. By now the engine has returned from its
@@ -807,6 +945,170 @@ static void MB_CALL_TYPE mbvOnStatus(mbWebView wv, void* param, const utf8* url)
 {
     (void)wv;
     postEvent((MbView*)param, MBV_EV_STATUS, url, NULL, 0, 0);
+}
+
+/* Favicon download finished. This runs on the engine's loader thread, so the
+ * encoded bytes are copied into the event queue; the host decodes on the UI
+ * thread (WIC and the tab model are UI-thread only). */
+static void MB_CALL_TYPE mbvOnFavicon(mbWebView wv, void* param, const utf8* url,
+                                      mbMemBuf* buf)
+{
+    MbView* v = (MbView*)param;
+
+    (void)wv;
+
+    if (!v || !buf || !buf->data || buf->length <= 0 || buf->length > 1024 * 1024)
+        return;
+
+    trace("cb favicon url=%s len=%d", url ? url : "", (int)buf->length);
+    postEventBin(v, MBV_EV_FAVICON, url, buf->data, (int)buf->length);
+}
+
+/* --- host fetch (agave_webview_fetch) ------------------------------------ */
+/* The engine runs these on its loader thread. The data is accumulated here and
+ * handed to the UI thread once the job is terminal, so the host never sees a
+ * partial icon. */
+
+static void mbvFetchRelease(MvFetch* f)
+{
+    if (!f)
+        return;
+
+    free(f->data);
+    free(f);
+}
+
+static void mbvFetchData(mbWebView wv, void* param, mbWebUrlRequestPtr request,
+                         const char* data, int dataLength)
+{
+    MvFetch* f = (MvFetch*)param;
+    char* grown;
+
+    (void)wv;
+    (void)request;
+
+    if (!f || f->failed || f->cancelled || !data || dataLength <= 0)
+        return;
+
+    /* An icon is a few KB; anything near a megabyte is not one (a page that
+     * points <link rel=icon> at a photo). */
+    if (f->len + dataLength > 1024 * 1024) {
+        f->failed = 1;
+        if (f->requestId)
+            mbNetCancelWebUrlRequest(f->requestId);
+        return;
+    }
+
+    grown = (char*)realloc(f->data, (size_t)f->len + (size_t)dataLength);
+    if (!grown) {
+        f->failed = 1;
+        return;
+    }
+
+    f->data = grown;
+    memcpy(f->data + f->len, data, (size_t)dataLength);
+    f->len += dataLength;
+}
+
+static void mbvFetchResponse(mbWebView wv, void* param, mbWebUrlRequestPtr request,
+                             mbWebUrlResponsePtr response)
+{
+    MvFetch* f = (MvFetch*)param;
+    int status;
+
+    (void)wv;
+    (void)request;
+
+    if (!f || !response)
+        return;
+
+    /* 404/500 pages still have a body; do not hand their HTML to the decoder. */
+    status = mbNetGetHttpStatusCode(response);
+    if (status >= 400)
+        f->failed = 1;
+}
+
+static void mbvFetchFail(mbWebView wv, void* param, mbWebUrlRequestPtr request,
+                         const utf8* error)
+{
+    MvFetch* f = (MvFetch*)param;
+
+    (void)wv;
+    (void)request;
+    (void)error;
+
+    if (f)
+        f->failed = 1;
+}
+
+/* Terminal callback: the job is done, hand the bytes to the UI thread. */
+static void mbvFetchFinish(mbWebView wv, void* param, mbWebUrlRequestPtr request,
+                           double finishTime)
+{
+    MvFetch* f = (MvFetch*)param;
+
+    (void)wv;
+    (void)request;
+    (void)finishTime;
+
+    if (!f)
+        return;
+
+    f->requestId = 0;
+
+    if (!f->v || f->cancelled) {
+        f->cancelled = 1;
+        if (f->v && f->v->fetch == f)
+            f->v->fetch = NULL;
+        mbvFetchRelease(f);
+        return;
+    }
+
+    if (f->v->fetch == f)
+        f->v->fetch = NULL;
+
+    postEventPtr(f->v, MBV_EV_FETCH, f);
+}
+
+int agave_webview_fetch(AgaveWebView* view, const char* url,
+                        AgaveWebViewFetchFn done, void* user)
+{
+    MbView* v = (MbView*)view;
+    MvFetch* f;
+    mbWebUrlRequestPtr request;
+    mbUrlRequestCallbacks callbacks;
+
+    if (!v || !url || !url[0] || !done || v->destroying || !v->wv)
+        return 0;
+
+    request = mbNetCreateWebUrlRequest(url, "GET", "image/png");
+    if (!request)
+        return 0;
+
+    f = (MvFetch*)calloc(1, sizeof(*f));
+    if (!f)
+        return 0;
+
+    f->v = v;
+    f->done = done;
+    f->user = user;
+    copyStr(f->url, sizeof(f->url), url);
+
+    memset(&callbacks, 0, sizeof(callbacks));
+    callbacks.didReceiveResponseCallback = mbvFetchResponse;
+    callbacks.didReceiveDataCallback = mbvFetchData;
+    callbacks.didFailCallback = mbvFetchFail;
+    callbacks.didFinishLoadingCallback = mbvFetchFinish;
+
+    f->requestId = mbNetStartUrlRequest(v->wv, request, f, &callbacks);
+    if (!f->requestId) {
+        free(f);
+        return 0;
+    }
+
+    v->fetch = f;
+    trace("fetch start url=%s id=%d", f->url, f->requestId);
+    return 1;
 }
 
 /* Load start (link click, form submit, back/forward, reload).  The URL is read
@@ -1494,9 +1796,18 @@ static LRESULT CALLBACK mbvViewProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 
         if (v && (!v->destroying || (e && e->type == MBV_EV_FINALIZE)))
             deliverEvent(v, e);
+        else if (e && e->type == MBV_EV_FETCH && e->ptr) {
+            /* The control went away while the job was finishing: nothing to
+             * report to, just release the accumulated body. */
+            mbvFetchRelease((MvFetch*)e->ptr);
+            e->ptr = NULL;
+        }
         if (e) {
             free(e->a);
             free(e->b);
+            free(e->bin);
+            free(e->ptr);
+            e->ptr = NULL;
             free(e);
         }
         return 0;
@@ -1658,6 +1969,7 @@ AgaveWebView* agave_webview_create(void* parent, int x, int y, int width, int he
     mbOnDocumentReady(v->wv, mbvOnDocumentReady, v);
     mbOnNavigation(v->wv, mbvOnNavigation, v);
     mbOnMouseOverUrlChanged(v->wv, mbvOnStatus, v);
+    mbOnNetGetFavicon(v->wv, mbvOnFavicon, v);
     mbOnConsole(v->wv, mbvOnConsole, v);
     mbOnAlertBox(v->wv, mbvOnAlert, v);
     mbOnConfirmBox(v->wv, mbvOnConfirm, v);

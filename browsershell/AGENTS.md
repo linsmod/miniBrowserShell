@@ -46,10 +46,13 @@ MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webv
 | `tools/newtab-open-check.ps1` | 打开新标签页（handoff `--new-tab`，同 Ctrl+T）不能崩：隐藏壳 + 等 2 秒仍存活 |
 | `tools/tabsearch-check.ps1` | 标签搜索在加载中不被引擎的伪 `WM_ACTIVATE(WA_INACTIVE)` 关掉：隐藏壳 + `AGB_TEST_TABSEARCH=1`，5 秒后仍 open |
 | `tools/settings-restore-check.ps1` | 恢复会话时排在后台的 `minishell://settings` 也能拿到动态数据：临时 profile 写 `restore=1` + settings/文件页两行 session，隐藏壳断言后台请求被回答且 `delivered` 计数达到整组 |
+| `tools/favicon-check.ps1` | favicon：`--ui-shot --ui-favicon` 解码并画出真实 PNG/ICO（断言 tab 像素），再加本地 HTTP 页面验证页面报 icon URL → `agave_webview_fetch` 走引擎网络栈下载 → 解码落到 tab |
 | `tools/gen-shell-version.ps1` | 构建前生成 `build-msvc/generated/shell_version.h`（tag 或 6 位 commit，脏树加 `-dirty`） |
 
 崩溃链路（报告 → 崩溃页）可以 headless 验证，不要开窗口：
-`AGB_TEST_CRASH=1 AGB_CRASH_POPUP=0` 只写 `agb_crash.txt`；
+`AGB_TEST_CRASH=1 AGB_CRASH_POPUP=0` 写 `agb_crash_test_<时间戳>.txt`（用户运行是
+`agb_crash_<时间戳>.txt`，永不混用），崩溃页只在真正未处理的异常上弹，headless 运行
+（probe / `--ui-shot` / `AGB_SHELL_HIDDEN`）只往 stderr 打 `[crash] report: <路径>`；
 `AGB_SHELL_HIDDEN=1 AGB_CRASH_PAGE_SAVE=1 minishell.exe --crash-page <report>` 渲染崩溃页、
 把 HTML 存到 `%TEMP%\MiniShell-crash-page.html` 后自动退出。报告必须保持无隐私
 （模块名/偏移，不要路径和 URL）；崩溃页是独立进程，因为它可能正是坏掉的那部分。
@@ -93,6 +96,17 @@ MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webv
   现在只读请求（`__agb_settings_get__` / `__agb_newtab_get__`）按"请求它的标签"回答，动作类仍只认活动标签；
   `settingsSendAll()` 把实际投递数打到 `settings: values sent delivered=N`（`agave_webview_post_message`
   现在返回是否投递），`tools/settings-restore-check.ps1` 锁这个行为。
+- **`mbOnNetGetFavicon` 是空实现**：DLL 里只把回调和参数存下来，页面加载既不请求 icon 也不会回调
+  （本地页面 + `<link rel=icon>` 实测：服务端只收到 `/page.html`；公版源码 `MbnetApi.cpp` 里就是
+  `not impl`）。favicon 由外壳自己取：load 完后页面用 `agavePostMessage` 报 `<link rel=icon>` 的 URL，
+  宿主用 `agave_webview_fetch()`（内部 = `mbNetCreateWebUrlRequest` + `mbNetStartUrlRequest`，
+  走引擎的代理/cookie/TLS）下载，`/favicon.ico` 兜底，`ui_favicon.c` 用 WIC 解码。
+- **`mbNetCreateWebUrlRequest` 的 mime 不能传 NULL**：`mbNetCreateWebUrlRequest(url, "GET", NULL)`
+  在引擎里直接 AV（本机 0xc0000005，栈在 mb132 内）；必须给一个真实 mime（如 `"image/png"`）。
+  回调在 loader 线程，body 要自己攒起来再 `postEvent` 回 UI 线程。
+- **`mbOnDocumentReady` 对普通快速页面可能根本不触发**：`docReady` 只由这个回调置位，页面就会
+  缺 prelude（`agavePostMessage`、find/inspect 辅助函数全没有）。所以 loadingFinish 时若还没
+  `docReady`，补一次 prelude 注入。
 - **`WH_MOUSE_LL` 钩子返回 1 会冻住鼠标**：低层鼠标钩子的返回值是"丢弃该事件"，对 `WM_MOUSEMOVE`
   返回非 0 等于把光标的移动也丢掉，鼠标就动不了了（本机实测锁死）。输入拦截必须走控件自己的消息路径
   —— `agave_webview_set_input_capture`（`mb_view.c` 的 `mbvViewProc`），光标照常移动、页面只是收不到消息。

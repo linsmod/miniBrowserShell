@@ -21,7 +21,8 @@ set(SHELL_SOURCES
     src/ui_menu_host.c
     src/ui_tabsearch.c
     src/ui_theme.c
-    src/ui_widgets.c)
+    src/ui_widgets.c
+    src/ui_favicon.c)
 
 add_executable(minishell WIN32 ${SHELL_SOURCES})
 

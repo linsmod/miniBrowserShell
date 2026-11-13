@@ -97,6 +97,13 @@ typedef enum GpPixelOffsetMode {
     PixelOffsetModeHighQuality, PixelOffsetModeNone, PixelOffsetModeHalf
 } GpPixelOffsetMode;
 
+typedef enum GpInterpolationMode {
+    InterpolationModeDefault = 0, InterpolationModeLowQuality,
+    InterpolationModeHighQuality, InterpolationModeBilinear,
+    InterpolationModeNearestNeighbor, InterpolationModeHighQualityBilinear,
+    InterpolationModeHighQualityBicubic
+} GpInterpolationMode;
+
 typedef enum GpTextRenderingHint {
     TextRenderingHintSystemDefault = 0,
     TextRenderingHintSingleBitPerPixelGridFit,
@@ -200,6 +207,12 @@ GpStatus WINGDIPAPI GdipCreateBitmapFromScan0(INT width, INT height, INT stride,
                                               INT format, BYTE* scan0,
                                               GpBitmap** bitmap);
 GpStatus WINGDIPAPI GdipDisposeImage(GpImage* image);
+/* Scaled blit of a decoded image (favicons); the graphics' interpolation mode
+ * decides the filter, so a 32 px icon lands on a 16 px tab without aliasing. */
+GpStatus WINGDIPAPI GdipDrawImageRectI(GpGraphics* g, GpImage* image, INT x, INT y,
+                                       INT w, INT h);
+GpStatus WINGDIPAPI GdipSetInterpolationMode(GpGraphics* g, GpInterpolationMode mode);
+GpStatus WINGDIPAPI GdipGetInterpolationMode(GpGraphics* g, GpInterpolationMode* mode);
 
 /* Brushes / pens --------------------------------------------------------- */
 

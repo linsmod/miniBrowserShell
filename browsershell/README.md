@@ -92,6 +92,8 @@ Cookie / localStorage 都在这个目录下，每个标签共享同一 profile�
 ## 已实现的交互
 
 - 标签：新建 / 关闭 / 中键关闭 / 按下即切换 / 会话恢复；新标签页是 `minishell://newtab`
+- favicon：load 完后由页面报 `<link rel=icon>`，外壳用控件的 `agave_webview_fetch()`（引擎的代理/cookie/TLS）
+  下载、WIC 解码（PNG/ICO）后画进标签；页面没声明就取 `/favicon.ico`，都没有才退回首字母色块
   （居中搜索框，地址栏显示为空），不是空白 about:blank
 - 地址栏：Enter 导航、Ctrl+L 全选；无点号按搜索词走默认搜索引擎
 - 快捷键：Ctrl+T/W/R/L/F/J/D、Ctrl+Tab、Ctrl+Shift+A、Ctrl+Shift+T、Ctrl+= / Ctrl+- / Ctrl+0、F5、F12、Alt+←/→、Esc
@@ -108,7 +110,7 @@ Cookie / localStorage 都在这个目录下，每个标签共享同一 profile�
   SHA-256）分开显示，并有项目地址、启动参数和环境摘要
 - 下载：写入系统 Downloads（或 `--download-dir` 之外的默认目录），状态气泡显示进度/结果
 - 单实例 / `--new-tab` / `--new-window` 交接到已运行窗口
-- 崩溃：隐私无关的 `agb_crash.txt` + 独立的崩溃页（完整诊断、一键复制报告）
+- 崩溃：隐私无关的 `agb_crash_<时间戳>.txt`（测试运行是 `agb_crash_test_<时间戳>.txt`）+ 独立的崩溃页（完整诊断、一键复制报告）
 
 ## 新标签页与搜索归属
 
@@ -146,7 +148,7 @@ miniblink 偶尔会**静默丢掉一个新控件的第一次导航**：没有 `m
 
 ## 崩溃报告
 
-崩溃时外壳在进程 CWD 写 `agb_crash.txt`（完整报告），并另起一个进程显示崩溃页：
+崩溃时外壳在进程 CWD 写 `agb_crash_<时间戳>.txt`（完整报告），并另起一个进程显示崩溃页：
 异常代码/地址、访问类型、完整调用栈（`模块+偏移` **加 DbgHelp 符号**）、全部已加载模块及版本、系统版本、
 架构、DPI、进程存活时间，以及**排查构建用的标识**：项目地址、`mb132_x64.dll` 的 SHA-256、
 启动参数和环境变量摘要（URL/profile 路径等一律显示为 `(set)` / `(url omitted)`）。
@@ -165,6 +167,10 @@ Environment），方便用户报问题时对照。
 - `minishell.exe --crash-page <report>`：单独打开一个报告（崩溃处理器就是这么启动的），
   不读 profile、不恢复会话。
 - `AGB_CRASH_POPUP=0`：只写报告，不显示页面。
+- 报告文件名：用户运行是 `agb_crash_<时间戳>.txt`，probe/`--ui-shot`/`AGB_SHELL_HIDDEN`/
+  `AGB_TEST_CRASH` 等测试运行是 `agb_crash_test_<时间戳>.txt`，两边的文件不会互相覆盖；
+  时间戳避免同一目录里两次崩溃撞名。headless 运行不弹崩溃页，只在 stderr 打一行
+  `[crash] report: <完整路径>`。
 - `AGB_TEST_CRASH=1`：下一次启动立刻制造一个访问违例，用来验证整条链路；
   配合 `AGB_SHELL_HIDDEN=1`（不显示窗口）和 `AGB_CRASH_PAGE_SAVE=1`（把崩溃页 HTML
   存到 `%TEMP%\MiniShell-crash-page.html`）可以 headless 验证。

@@ -95,6 +95,12 @@ typedef struct AgaveWebViewCallback {
     void (*on_download)(AgaveWebView* view, const MC_DOWNLOAD_INFO* info, void* user);
     /* The page called window.agavePostMessage(text). */
     void (*on_message)(AgaveWebView* view, const char* message, void* user);
+    /* The page's favicon, as the engine downloaded it: `data`/`size` are the
+     * encoded bytes (PNG/ICO/BMP/JPEG/GIF) and are only valid during the call -
+     * copy or decode them here. `url` is the icon's source ("" if unknown).
+     * Runs on the UI thread, once per icon the page names. */
+    void (*on_favicon)(AgaveWebView* view, const char* url, const void* data,
+                       int size, void* user);
     /* The control's HWND got (focused=1) or lost (0) the keyboard focus. Hosts
      * with their own toolbar/fields use it to remember who owns the keyboard,
      * so a later WM_SETFOCUS can be handed back to the right party. */
@@ -244,6 +250,19 @@ AGW_API int agave_webview_eval(AgaveWebView* view, const char* script);
  * a command the current selection cannot use (e.g. Copy with nothing selected)
  * does nothing. */
 AGW_API int agave_webview_editor_command(AgaveWebView* view, const char* command);
+
+/* One request through the control's own network stack: same proxy, cookies,
+ * cache and TLS as a navigation. The body arrives on the UI thread through
+ * `done` (exactly once per started request; data is NULL/size 0 when it failed
+ * or the control was destroyed first). The bytes are only valid during the
+ * call, so copy what you keep. This is the engine's documented way to download
+ * a resource the page names - there is no separate favicon fetch. Returns 1
+ * when the request started. */
+typedef void (*AgaveWebViewFetchFn)(AgaveWebView* view, void* user,
+                                    const char* url, const void* data, int size);
+
+AGW_API int agave_webview_fetch(AgaveWebView* view, const char* url,
+                                AgaveWebViewFetchFn done, void* user);
 
 /* Page zoom: 100 is normal. Applied as a CSS zoom on the document's root
  * element, so it scales the page once and survives a navigation. The display
