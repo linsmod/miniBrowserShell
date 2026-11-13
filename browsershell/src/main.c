@@ -8429,6 +8429,19 @@ static int uiShotMain(void)
                                                         active.y + active.h -
                                                             uiThemeScale(&chrome.theme, 8)),
                                               chrome.theme.surface));
+        /* A resting inactive tab paints no pill at all: the strip shows through.
+         * The tab-strip hover indexes are model indices, so 0 (the memset
+         * default) means "hover the first tab" - a chrome rebuilt by the theme
+         * switch painted tab 0 hovered until the next mouse move. */
+        {
+            UiRect first = chrome.tabstrip.tab[0];
+
+            uiCheck("pixel-first-tab-resting",
+                    sameColor(shotPixel((const unsigned char*)bits, width, height,
+                                        first.x + uiThemeScale(&chrome.theme, 3),
+                                        first.y + first.h / 2),
+                              chrome.theme.chrome));
+        }
         /* Chrome's active tab flares out where it meets the toolbar: one pixel
          * left of the tab and one above the base is tab colour, while the same
          * one pixel left, higher up, is still strip. */

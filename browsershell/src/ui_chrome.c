@@ -57,6 +57,14 @@ void uiChromeInit(UiChrome* chrome, UiThemeKind kind, unsigned dpi,
     chrome->hover_part = UI_PART_NONE;
     chrome->model.active = -1;
 
+    /* memset() left these at 0, which is a valid model index: a chrome rebuilt
+     * by a theme switch painted the first tab (and its close chip) as hovered
+     * until the next mouse move. -1 is "no tab". */
+    chrome->tabstrip.hover_tab = -1;
+    chrome->tabstrip.hover_close = -1;
+    chrome->tabstrip.pressed_tab = -1;
+    chrome->tabstrip.pressed_close = -1;
+
     if (callbacks)
         chrome->cb = *callbacks;
 
