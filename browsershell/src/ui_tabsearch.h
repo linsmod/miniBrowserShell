@@ -2,7 +2,8 @@
  * ui_tabsearch.[ch] - Chrome's "Search tabs" popup (Ctrl+Shift+A).
  *
  * A layered top-level popup that lists the open tabs and the recently closed
- * ones, filterable by typing. It is deliberately *not* modal: the popup takes
+ * ones in a filter field (typed query + caret), with a scrollbar when the list
+ * is taller than the popup. It is deliberately *not* modal: the popup takes
  * the mouse (capture) so an outside click dismisses it, while the keyboard stays
  * with the shell, which forwards WM_CHAR / WM_KEYDOWN to uiTabSearchKey().
  *

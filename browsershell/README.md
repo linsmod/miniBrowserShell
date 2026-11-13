@@ -97,6 +97,7 @@ Cookie / localStorage 都在这个目录下，每个标签共享同一 profile�
 - 快捷键：Ctrl+T/W/R/L/F/J/D、Ctrl+Tab、Ctrl+Shift+A、Ctrl+Shift+T、Ctrl+= / Ctrl+- / Ctrl+0、F5、F12、Alt+←/→、Esc
 - 缩放：Ctrl+= / Ctrl+- / Ctrl+0、Ctrl+滚轮、应用菜单和设置页；按标签记录，导航后重新套用（CSS `zoom`）
 - 查找栏：浮层、Enter/Shift+Enter、Esc 关闭
+- 标签搜索（Ctrl+Shift+A）：顶部筛选输入框，列表超高时有滚动条（滚轮/拖动/PageUp/PageDown/Home/End）
 - 自绘右键菜单和应用菜单、书签/历史子菜单
 - 主题 `AGB_SHELL_THEME=light|dark|auto`、Per-Monitor V2 DPI
 - 设置页（应用菜单 → Settings）：主题、搜索引擎、默认缩放、启动恢复会话、清空历史、下载目录；

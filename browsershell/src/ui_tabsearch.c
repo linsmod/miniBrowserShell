@@ -22,12 +22,15 @@
 #include "ui_widgets.h"
 
 #define TS_WIDTH       360
-#define TS_SEARCH_H    46
+#define TS_SEARCH_H    50
 #define TS_HEADER_H    30
 #define TS_ROW_H       46
 #define TS_FAVICON     28
 #define TS_MARGIN      2
 #define TS_MAX_QUERY   128
+#define TS_SCROLL_W    4
+#define TS_SCROLL_MIN  24
+#define TS_FIELD_INSET 8
 
 enum {
     TS_ROW_ITEM = 0,       /* a tab (open or closed) */
@@ -55,6 +58,9 @@ typedef struct {
     int selected;         /* index into rows[], -1 */
     int scroll_y;         /* pixels hidden above the list */
     int content_h;        /* full list height below the search row */
+    int dragging_scroll;  /* the scrollbar thumb is being dragged */
+    int scroll_drag_offset;
+    int wheel_accum;      /* WM_MOUSEWHEEL leftovers (precision touchpads) */
     POINT origin;         /* screen position of the surface */
 
     int width;
@@ -146,6 +152,8 @@ static void tsAgeLabel(char* out, size_t out_size, int age_ms)
     out[out_size - 1] = 0;
 }
 
+static int tsListHeight(void);
+
 static void tsRebuildRows(void)
 {
     int open_header_done = 0;
@@ -199,6 +207,8 @@ static void tsRebuildRows(void)
             break;
         }
     }
+
+    g_ts.content_h = tsListHeight();
 }
 
 static int tsListHeight(void)
@@ -215,6 +225,105 @@ static int tsListHeight(void)
     }
 
     return headers * tsScale(TS_HEADER_H) + items * tsScale(TS_ROW_H);
+}
+
+/* ------------------------------------------------------------------------- */
+/* scrollbar geometry                                                         */
+/* ------------------------------------------------------------------------- */
+
+static void tsClampScroll(void);
+static void tsRender(void);
+
+static int tsScrollView(void)
+{
+    return g_ts.height - tsScale(TS_SEARCH_H);
+}
+
+static int tsScrollbarVisible(void)
+{
+    return g_ts.content_h > tsScrollView() && tsScrollView() > 0;
+}
+
+/* Space the rows leave free on the right while the scrollbar is shown. */
+static int tsScrollReserve(void)
+{
+    return tsScrollbarVisible() ? tsScale(TS_SCROLL_W + 6) : 0;
+}
+
+static UiRect tsScrollTrack(void)
+{
+    int view = tsScrollView();
+    int x = TS_MARGIN + g_ts.width - tsScale(TS_SCROLL_W + 6);
+    int y = TS_MARGIN + tsScale(TS_SEARCH_H) + tsScale(4);
+    int h = view - tsScale(8);
+
+    if (h < tsScale(TS_SCROLL_MIN))
+        h = tsScale(TS_SCROLL_MIN);
+
+    return uiRectMake(x, y, tsScale(TS_SCROLL_W), h);
+}
+
+static UiRect tsScrollThumb(void)
+{
+    UiRect track = tsScrollTrack();
+    int view = tsScrollView();
+    int max = g_ts.content_h > view ? g_ts.content_h - view : 0;
+    int thumb_h;
+    int y;
+
+    if (max <= 0)
+        return track;
+
+    thumb_h = (int)((long long)track.h * view / g_ts.content_h);
+    if (thumb_h < tsScale(TS_SCROLL_MIN))
+        thumb_h = tsScale(TS_SCROLL_MIN);
+    if (thumb_h > track.h)
+        thumb_h = track.h;
+
+    y = track.y + (int)((long long)g_ts.scroll_y * (track.h - thumb_h) / max);
+    return uiRectMake(track.x, y, track.w, thumb_h);
+}
+
+/* 1 when the point is on the scrollbar; *on_thumb says whether it is the thumb
+ * (drag) or the track (jump). */
+static int tsScrollbarHit(int x, int y, int* on_thumb)
+{
+    UiRect track;
+    UiRect thumb;
+
+    if (!tsScrollbarVisible())
+        return 0;
+
+    track = tsScrollTrack();
+    if (x < track.x - tsScale(4) || x >= track.x + track.w + tsScale(4) ||
+        y < track.y || y >= track.y + track.h)
+        return 0;
+
+    thumb = tsScrollThumb();
+    if (on_thumb)
+        *on_thumb = (y >= thumb.y && y < thumb.y + thumb.h);
+    return 1;
+}
+
+static void tsScrollFromThumb(int thumb_y)
+{
+    UiRect track = tsScrollTrack();
+    UiRect thumb = tsScrollThumb();
+    int view = tsScrollView();
+    int max = g_ts.content_h > view ? g_ts.content_h - view : 0;
+    int span = track.h - thumb.h;
+
+    if (max <= 0 || span <= 0)
+        return;
+
+    if (thumb_y < track.y)
+        thumb_y = track.y;
+    if (thumb_y > track.y + span)
+        thumb_y = track.y + span;
+
+    g_ts.scroll_y = (int)((long long)(thumb_y - track.y) * max / span);
+    tsClampScroll();
+    tsRender();
 }
 
 static void tsEnsureSurface(int width, int height)
@@ -290,6 +399,7 @@ static void tsRender(void)
     int y;
     int i;
     int list_bottom;
+    int reserve;
 
     if (!g_ts.hwnd || !theme)
         return;
@@ -315,31 +425,71 @@ static void tsRender(void)
     uiFillRoundRect(&painter, panel, tsScale(8), theme->menu_bg);
     uiStrokeRoundRect(&painter, panel, tsScale(8), theme->menu_border, 1.0f);
 
-    /* Search row: magnifier, query (or placeholder), the shortcut hint. */
-    uiIcon(&painter, UI_ICON_SEARCH,
-           uiRectMake(TS_MARGIN + tsScale(14),
-                      TS_MARGIN + (tsScale(TS_SEARCH_H) - tsScale(16)) / 2,
-                      tsScale(16), tsScale(16)),
-           theme->icon, (1.5f * theme->scale));
+    /* The filter is a real input box, not a flat menu row: rounded fill,
+     * border, magnifier and a caret after the query. The popup cannot host a
+     * native EDIT (layered window), so the shell forwards the keys. */
+    {
+        UiRect field = uiRectMake(TS_MARGIN + tsScale(TS_FIELD_INSET),
+                                  TS_MARGIN + tsScale(7),
+                                  panel.w - tsScale(TS_FIELD_INSET * 2),
+                                  tsScale(TS_SEARCH_H) - tsScale(14));
+        UiRect icon = uiRectMake(field.x + tsScale(10),
+                                 field.y + (field.h - tsScale(16)) / 2,
+                                 tsScale(16), tsScale(16));
+        UiRect text = uiRectMake(field.x + tsScale(34), field.y,
+                                 field.w - tsScale(34) - tsScale(94), field.h);
+        GpFont* font = g_ts.query[0] ? theme->font_ui : theme->font_small;
+        const char* label = g_ts.query[0] ? g_ts.query : "Search tabs";
+        int text_w = 0;
+        int text_h = 0;
+        int caret_x;
+        int caret_w = tsScale(1);
 
-    uiText(&painter, g_ts.query[0] ? g_ts.query : "Search tabs",
-           uiRectMake(TS_MARGIN + tsScale(40), TS_MARGIN,
-                      panel.w - tsScale(140), tsScale(TS_SEARCH_H)),
-           g_ts.query[0] ? theme->font_ui : theme->font_small,
-           g_ts.query[0] ? theme->text : theme->text_faint, UI_ALIGN_LEFT);
+        uiFillRoundRect(&painter, field, tsScale(6), theme->field);
+        uiStrokeRoundRect(&painter, field, tsScale(6), theme->border_strong, 1.0f);
+        uiIcon(&painter, UI_ICON_SEARCH, icon, theme->icon, (1.5f * theme->scale));
 
-    uiText(&painter, "Ctrl+Shift+A",
-           uiRectMake(panel.x + panel.w - tsScale(116), TS_MARGIN,
-                      tsScale(104), tsScale(TS_SEARCH_H)),
-           theme->font_small, theme->text_faint, UI_ALIGN_RIGHT);
+        if (!g_ts.query[0]) {
+            /* Keep the placeholder clear of the caret sitting at the start. */
+            text.x += tsScale(3);
+            text.w -= tsScale(3);
+        }
+
+        uiText(&painter, label, text, font,
+               g_ts.query[0] ? theme->text : theme->text_faint, UI_ALIGN_LEFT);
+
+        if (caret_w < 1)
+            caret_w = 1;
+
+        if (!uiMeasureText(theme, font, g_ts.query[0] ? g_ts.query : "",
+                           &text_w, &text_h))
+            text_w = g_ts.query[0] ? (int)strlen(g_ts.query) * tsScale(8) : 0;
+
+        caret_x = text.x + text_w + tsScale(1);
+        if (caret_x > text.x + text.w - tsScale(2))
+            caret_x = text.x + text.w - tsScale(2);
+
+        uiFillRect(&painter,
+                   uiRectMake(caret_x, field.y + tsScale(9), caret_w,
+                              field.h - tsScale(18)),
+                   theme->text);
+
+        uiText(&painter, "Ctrl+Shift+A",
+               uiRectMake(field.x + field.w - tsScale(94), field.y,
+                          tsScale(86), field.h),
+               theme->font_small, theme->text_faint, UI_ALIGN_RIGHT);
+    }
 
     y = TS_MARGIN + tsScale(TS_SEARCH_H);
     uiFillRect(&painter, uiRectMake(TS_MARGIN + 1, y - 1, panel.w - 2, 1),
                theme->menu_sep);
 
-    /* Rows, scrolled; anything outside the panel is skipped. */
+    /* Rows, scrolled; anything outside the panel is skipped. The scrollbar
+     * takes a strip on the right, so rows leave that space free. */
     list_bottom = TS_MARGIN + height - TS_MARGIN;
     g_ts.content_h = tsListHeight();
+
+    reserve = tsScrollReserve();
 
     for (i = 0; i < g_ts.row_count; ++i) {
         TsRow* row = &g_ts.rows[i];
@@ -361,13 +511,14 @@ static void tsRender(void)
             UiTabSearchItem* item = &g_ts.items[row->item];
             int selected = (i == g_ts.selected);
             UiRect row_rect = uiRectMake(TS_MARGIN + tsScale(6), top,
-                                         panel.w - tsScale(12), row_h - tsScale(2));
+                                         panel.w - tsScale(12) - reserve,
+                                         row_h - tsScale(2));
             UiRect favicon = uiRectMake(TS_MARGIN + tsScale(12), top + tsScale(9),
                                         tsScale(TS_FAVICON), tsScale(TS_FAVICON));
             UiRect title_rect = uiRectMake(TS_MARGIN + tsScale(52), top + tsScale(6),
-                                           panel.w - tsScale(90), tsScale(18));
+                                           panel.w - tsScale(90) - reserve, tsScale(18));
             UiRect sub_rect = uiRectMake(TS_MARGIN + tsScale(52), top + tsScale(25),
-                                         panel.w - tsScale(90), tsScale(15));
+                                         panel.w - tsScale(90) - reserve, tsScale(15));
             char host[128];
             char age[32];
             char sub[220];
@@ -401,6 +552,14 @@ static void tsRender(void)
         }
 
         y += row_h;
+    }
+
+    if (tsScrollbarVisible()) {
+        UiRect track = tsScrollTrack();
+        UiRect thumb = tsScrollThumb();
+
+        uiFillRoundRect(&painter, track, track.w / 2, theme->menu_sep);
+        uiFillRoundRect(&painter, thumb, thumb.w / 2, theme->text_faint);
     }
 
     uiPainterEnd(&painter);
@@ -496,6 +655,48 @@ static void tsMoveSelection(int direction)
     tsRender();
 }
 
+static void tsMoveSelectionPage(int direction)
+{
+    int view = tsScrollView();
+    int step = tsScale(TS_ROW_H);
+    int steps = step > 0 ? view / step : 1;
+    int target = g_ts.selected;
+    int i;
+
+    if (steps < 1)
+        steps = 1;
+
+    for (i = 0; i < steps; ++i) {
+        int j = target + direction;
+
+        while (j >= 0 && j < g_ts.row_count && g_ts.rows[j].kind != TS_ROW_ITEM)
+            j += direction;
+        if (j < 0 || j >= g_ts.row_count)
+            break;
+        target = j;
+    }
+
+    if (target != g_ts.selected) {
+        g_ts.selected = target;
+        tsScrollToSelection();
+        tsRender();
+    }
+}
+
+static void tsSelectEdge(int first)
+{
+    int i = first ? 0 : g_ts.row_count - 1;
+
+    for (; i >= 0 && i < g_ts.row_count; i += first ? 1 : -1) {
+        if (g_ts.rows[i].kind == TS_ROW_ITEM) {
+            g_ts.selected = i;
+            tsScrollToSelection();
+            tsRender();
+            return;
+        }
+    }
+}
+
 static void tsActivate(int row)
 {
     int item;
@@ -519,8 +720,18 @@ static LRESULT CALLBACK tsProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lP
     switch (message) {
     case WM_MOUSEMOVE: {
         POINT point = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
-        int row = tsRowAt(point.y);
+        int on_thumb = 0;
+        int row;
 
+        if (g_ts.dragging_scroll) {
+            tsScrollFromThumb(point.y - g_ts.scroll_drag_offset);
+            return 0;
+        }
+
+        if (tsScrollbarHit(point.x, point.y, &on_thumb))
+            return 0;
+
+        row = tsRowAt(point.y);
         if (row >= 0 && row != g_ts.selected) {
             g_ts.selected = row;
             tsRender();
@@ -530,12 +741,33 @@ static LRESULT CALLBACK tsProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lP
 
     case WM_LBUTTONDOWN: {
         POINT point = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
-        int row = tsRowAt(point.y);
+        int on_thumb = 0;
+        int row;
 
+        if (tsScrollbarHit(point.x, point.y, &on_thumb)) {
+            UiRect thumb = tsScrollThumb();
+
+            g_ts.dragging_scroll = 1;
+            g_ts.scroll_drag_offset = on_thumb ? point.y - thumb.y : thumb.h / 2;
+            tsScrollFromThumb(point.y - g_ts.scroll_drag_offset);
+            return 0;
+        }
+
+        /* The search field is the filter input: a click there must not dismiss
+         * the popup. Only a click outside the panel closes it, like a menu. */
+        if (point.x >= TS_MARGIN && point.x < TS_MARGIN + g_ts.width &&
+            point.y >= TS_MARGIN && point.y < TS_MARGIN + tsScale(TS_SEARCH_H))
+            return 0;
+
+        if (point.x < TS_MARGIN || point.x >= TS_MARGIN + g_ts.width ||
+            point.y < TS_MARGIN || point.y >= TS_MARGIN + g_ts.height) {
+            uiTabSearchClose();
+            return 0;
+        }
+
+        row = tsRowAt(point.y);
         if (row >= 0)
             g_ts.selected = row;
-        else
-            uiTabSearchClose();   /* padding / search row: dismiss like a menu */
 
         tsRender();
         return 0;
@@ -543,17 +775,29 @@ static LRESULT CALLBACK tsProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lP
 
     case WM_LBUTTONUP: {
         POINT point = { (short)LOWORD(lParam), (short)HIWORD(lParam) };
-        int row = tsRowAt(point.y);
+        int on_thumb = 0;
+        int row;
 
+        if (g_ts.dragging_scroll) {
+            g_ts.dragging_scroll = 0;
+            return 0;
+        }
+
+        if (tsScrollbarHit(point.x, point.y, &on_thumb))
+            return 0;
+
+        row = tsRowAt(point.y);
         if (row < 0 || g_ts.rows[row].kind != TS_ROW_ITEM)
             return 0;
 
         {
             UiTabSearchItem* item = &g_ts.items[g_ts.rows[row].item];
+            int row_w = (g_ts.width - TS_MARGIN * 2) - tsScale(12) - tsScrollReserve();
+            int close_left = TS_MARGIN + tsScale(6) + row_w - tsScale(24);
 
             /* The close cross occupies the right end of a hovered open row. */
             if (item->kind == UI_TABSEARCH_OPEN &&
-                point.x > g_ts.width - tsScale(36) - TS_MARGIN) {
+                point.x >= close_left && point.x < close_left + tsScale(20)) {
                 if (g_ts.cb.close)
                     g_ts.cb.close(g_ts.cb.user, g_ts.rows[row].item);
 
@@ -568,8 +812,21 @@ static LRESULT CALLBACK tsProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lP
 
     case WM_MOUSEWHEEL: {
         int delta = (int)(short)HIWORD(wParam);
+        int step = tsScale(TS_ROW_H);
 
-        g_ts.scroll_y -= delta / 120 * tsScale(TS_ROW_H);
+        /* Accumulate: a precision touchpad sends deltas below WHEEL_DELTA and
+         * the old delta/120 arithmetic turned those into zero (no scrolling). */
+        g_ts.wheel_accum += delta;
+
+        while (g_ts.wheel_accum >= WHEEL_DELTA) {
+            g_ts.wheel_accum -= WHEEL_DELTA;
+            g_ts.scroll_y -= step;
+        }
+        while (g_ts.wheel_accum <= -WHEEL_DELTA) {
+            g_ts.wheel_accum += WHEEL_DELTA;
+            g_ts.scroll_y += step;
+        }
+
         tsClampScroll();
         tsRender();
         return 0;
@@ -609,6 +866,8 @@ int uiTabSearchOpen(HWND owner, const UiTheme* theme,
     g_ts.item_count = count;
     g_ts.query[0] = 0;
     g_ts.scroll_y = 0;
+    g_ts.dragging_scroll = 0;
+    g_ts.wheel_accum = 0;
     tsRebuildRows();
 
     if (!g_ts.hwnd) {
@@ -737,8 +996,12 @@ void uiTabSearchKey(UINT message, WPARAM wParam, LPARAM lParam)
 
     if (message == WM_KEYDOWN) {
         switch (wParam) {
-        case VK_UP:   tsMoveSelection(-1); break;
-        case VK_DOWN: tsMoveSelection(1); break;
+        case VK_UP:    tsMoveSelection(-1); break;
+        case VK_DOWN:  tsMoveSelection(1); break;
+        case VK_PRIOR: tsMoveSelectionPage(-1); break;
+        case VK_NEXT:  tsMoveSelectionPage(1); break;
+        case VK_HOME:  tsSelectEdge(1); break;
+        case VK_END:   tsSelectEdge(0); break;
         case VK_RETURN:
             tsActivate(g_ts.selected);
             break;
@@ -786,6 +1049,8 @@ void uiTabSearchKey(UINT message, WPARAM wParam, LPARAM lParam)
         }
 
         tsRebuildRows();
+        g_ts.scroll_y = 0;      /* a new filter starts at the top */
+        tsScrollToSelection();
         tsClampScroll();
         tsRender();
     }
