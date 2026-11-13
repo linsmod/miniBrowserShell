@@ -48,6 +48,13 @@ try {
     $text = Get-Content $report -Raw
     $problems = @()
 
+    $pdb = Join-Path $root 'build-msvc\Release\minishell.pdb'
+    if (-not (Test-Path $pdb)) { $problems += 'minishell.pdb missing (no /DEBUG build)' }
+    if ($text -notmatch 'minishell\.exe\+0x[0-9a-f]+  [A-Za-z_][A-Za-z0-9_:]*\+0x[0-9a-f]+ \([a-z_]+\.c:[0-9]+\)') {
+        $problems += 'no symbol + source line for the shell frames'
+    }
+    if ($text -notmatch '\(export\)') { $problems += 'no export fallback marker' }
+
     if ($text -notmatch 'Shell\s+MiniShell [^\r\n]+, built') { $problems += 'shell version/build missing' }
     if ($text -notmatch 'Engine\s+mb132_x64\.dll ') { $problems += 'engine version missing' }
     if ($text -notmatch 'Engine hash SHA-256 [0-9a-f]{64}') { $problems += 'engine SHA-256 missing' }

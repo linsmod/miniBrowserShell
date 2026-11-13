@@ -9,3 +9,7 @@
  * named inspect.js next to the exe still wins, which keeps the script editable
  * while developing it. */
 201 RCDATA "assets/inspect.js"
+
+/* New tab page watermark. The SVG is the source of truth: edit the file and
+ * rebuild, no code change. */
+202 RCDATA "assets/logo.svg"

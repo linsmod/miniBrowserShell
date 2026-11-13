@@ -91,6 +91,11 @@ struct MbView {
      * mbReload() needs one: called while the first navigation is still in
      * flight it drops that load and starts nothing. */
     int                  committed;
+    /* A document exists and its main frame can take mbRunJs. Set on
+     * document-ready and never cleared: applying zoom during a navigation
+     * (before the new document exists) can queue JS for a frame the engine is
+     * about to replace, which faults inside mb132. */
+    int                  docReady;
 int                  restoreCache;   /* a hard reload turned the caches off */
     /* Context menu: one request at a time (the control delivers bursts of
      * WM_RBUTTONUP), and none while our menu is on screen. The menu must open
@@ -654,8 +659,12 @@ static void deliverEvent(MbView* v, MbEvent* e)
 
     case MBV_EV_DOCREADY:
         /* A fresh document starts unzoomed: put the tab's page zoom back and
-         * install the shared page helpers. */
-        viewApplyEngineScale(v);
+         * install the shared page helpers. At 100% there is nothing to do - the
+         * new document is already unzoomed - and skipping the run avoids a
+         * queue entry for a document that redirects immediately. */
+        v->docReady = 1;
+        if (v->zoom != 100)
+            viewApplyEngineScale(v);
         injectPrelude(v);
         if (v->loading) {
             v->progress = 60;
@@ -722,11 +731,11 @@ static void MB_CALL_TYPE mbvOnUrl(mbWebView wv, void* param, const utf8* url,
     trace("cb url: %s back=%d fwd=%d", url ? url : "",
           canGoBack ? 1 : 0, canGoForward ? 1 : 0);
 
-    /* Page zoom is a style on the document's root element, so a new document
-     * starts at 100% and the requested zoom is re-applied as soon as the commit
-     * lands (the document-ready handler does it again for good measure). */
-    if (v && !v->destroying)
-        viewApplyEngineScale(v);
+    /* No zoom work here: this is the commit, and the new document's frame is not
+     * ready. Running mbRunJs now queues a script against a frame the engine is
+     * still swapping; when it goes away the engine executes the script on a dead
+     * frame and faults (mb132+0x2508e3, read 0). The document-ready handler is
+     * the first safe point. */
 
     postEvent(v, MBV_EV_URL, url, NULL,
               canGoBack ? 1 : 0, canGoForward ? 1 : 0);
@@ -2084,33 +2093,94 @@ static void loadSettingsPage(MbView* v)
     postEvent(v, MBV_EV_PROGRESS, NULL, NULL, 100, 1);
 }
 
+/* app.rc: the new tab watermark (assets/logo.svg). */
+#define IDR_NEWTAB_LOGO 202
+
+/* Reads a RCDATA resource from this executable. The result is a NUL-terminated
+ * heap copy (the resource itself is not terminated); a UTF-8 BOM is dropped. */
+static char* readOwnResource(int id, size_t* lengthOut)
+{
+    HRSRC resource;
+    HGLOBAL handle;
+    DWORD size;
+    const unsigned char* data;
+    size_t skip = 0;
+    char* copy;
+
+    if (lengthOut)
+        *lengthOut = 0;
+
+    resource = FindResourceA(GetModuleHandleA(NULL), MAKEINTRESOURCEA(id), RT_RCDATA);
+    if (!resource)
+        return NULL;
+
+    handle = LoadResource(NULL, resource);
+    if (!handle)
+        return NULL;
+
+    size = SizeofResource(NULL, resource);
+    data = (const unsigned char*)LockResource(handle);
+    if (!data || size == 0)
+        return NULL;
+
+    if (size >= 3 && data[0] == 0xEF && data[1] == 0xBB && data[2] == 0xBF)
+        skip = 3;
+
+    copy = (char*)malloc((size_t)size - skip + 1);
+    if (!copy)
+        return NULL;
+
+    memcpy(copy, data + skip, (size_t)size - skip);
+    copy[size - skip] = 0;
+
+    if (lengthOut)
+        *lengthOut = (size_t)size - skip;
+
+    return copy;
+}
+
 /* minishell://newtab: the page shown for a new tab instead of an empty
- * about:blank. The box submits through the shell (agavePostMessage), so the
- * default search engine and its attribution parameters stay host policy; see
- * the __agb_newtab_search__ handler in main.c. */
-static const char kNewTabHtml[] =
+ * about:blank. Content sits near the top like a search page, not centered.
+ * The box submits through the shell (agavePostMessage), so the default search
+ * engine and its attribution parameters stay host policy; the shell answers
+ * __agb_newtab_get__ with the chrome's light/dark choice. The watermark is the
+ * embedded assets/logo.svg (RCDATA 202): edit the SVG and rebuild, no code
+ * change. */
+static const char kNewTabHead[] =
 "<!DOCTYPE html><html><head><meta charset=\"utf-8\">"
 "<meta name=\"color-scheme\" content=\"light dark\">"
 "<title>New tab</title><style>"
-":root{--bg:#fff;--fg:#202124;--muted:#5f6368;--line:#dfe1e5;--accent:#1a73e8;--card:#fff}"
+":root{--bg:#fff;--fg:#202124;--muted:#5f6368;--line:#dfe1e5;--accent:#1a73e8;"
+"--card:#fff;--wm-opacity:.04;--wm-filter:none}"
 "@media (prefers-color-scheme:dark){:root{--bg:#202124;--fg:#e8eaed;--muted:#9aa0a6;"
-"--line:#3c4043;--accent:#8ab4f8;--card:#292a2d}}"
+"--line:#3c4043;--accent:#8ab4f8;--card:#292a2d;--wm-opacity:.08;--wm-filter:invert(1)}}"
+"html[data-theme=light]{--bg:#fff;--fg:#202124;--muted:#5f6368;--line:#dfe1e5;"
+"--accent:#1a73e8;--card:#fff;--wm-opacity:.04;--wm-filter:none}"
+"html[data-theme=dark]{--bg:#202124;--fg:#e8eaed;--muted:#9aa0a6;--line:#3c4043;"
+"--accent:#8ab4f8;--card:#292a2d;--wm-opacity:.08;--wm-filter:invert(1)}"
 "*{box-sizing:border-box}"
-"html,body{margin:0;height:100%}"
-"body{display:flex;flex-direction:column;align-items:center;justify-content:center;"
+"html,body{margin:0;min-height:100%}"
+"body{min-height:100vh;display:flex;flex-direction:column;align-items:center;"
 "background:var(--bg);color:var(--fg);font:16px/1.5 'Segoe UI',system-ui,sans-serif;"
-"padding:24px}"
-"h1{font-size:42px;font-weight:600;letter-spacing:-.02em;margin:0 0 26px}"
-"form{width:min(620px,86vw)}"
+"padding:clamp(56px,15vh,150px) 24px 48px}"
+"main{width:min(640px,86vw);text-align:center;position:relative;z-index:1}"
+"h1{font-size:44px;font-weight:600;letter-spacing:-.02em;margin:0 0 26px}"
+"form{width:100%}"
 "input{width:100%;padding:13px 20px;border:1px solid var(--line);border-radius:26px;"
 "background:var(--card);color:var(--fg);font:inherit;font-size:17px;outline:none}"
 "input:focus{border-color:var(--accent);box-shadow:0 1px 6px rgba(32,33,36,.2)}"
 "p.hint{margin:16px 0 0;color:var(--muted);font-size:13px}"
-"</style></head><body>"
-"<h1>MiniShell</h1>"
+".watermark{position:fixed;right:clamp(20px,4vw,56px);bottom:clamp(18px,4vh,48px);"
+"width:min(24vmin,200px);opacity:var(--wm-opacity);filter:var(--wm-filter);"
+"pointer-events:none;z-index:0}"
+".watermark svg{display:block;width:100%;height:auto}"
+"</style></head><body>";
+
+static const char kNewTabTail[] =
+"<main><h1>MiniShell</h1>"
 "<form id=\"f\"><input id=\"q\" type=\"search\" autocomplete=\"off\" spellcheck=\"false\" "
 "placeholder=\"Search the web or enter an address\" autofocus></form>"
-"<p class=\"hint\">Search uses the default engine from Settings.</p>"
+"<p class=\"hint\">Search uses the default engine from Settings.</p></main>"
 "<script>"
 "function submitQuery(){"
 "var q=document.getElementById('q');var v=q.value.replace(/^\\s+|\\s+$/g,'');"
@@ -2119,13 +2189,48 @@ static const char kNewTabHtml[] =
 "}"
 "document.getElementById('f').addEventListener('submit',function(e){"
 "e.preventDefault();submitQuery();});"
+"window.onAgaveMessage=function(m){"
+"if(m.indexOf('__agb_newtab_theme__')!==0)return;"
+"var t=m.slice(20);"
+"document.documentElement.setAttribute('data-theme',t==='dark'?'dark':'light');"
+"};"
+"function boot(){"
+"if(typeof agavePostMessage!=='function'){setTimeout(boot,60);return;}"
+"try{agavePostMessage('__agb_newtab_get__');}catch(e){}"
+"}"
+"boot();"
 "setTimeout(function(){try{document.getElementById('q').focus();}catch(e){}},0);"
 "</script></body></html>";
 
 static void loadNewTabPage(MbView* v)
 {
-    mbLoadHtmlWithBaseUrl(v->wv, kNewTabHtml, "minishell://newtab");
+    size_t logoLen = 0;
+    char* logo = readOwnResource(IDR_NEWTAB_LOGO, &logoLen);
+    size_t cap = strlen(kNewTabHead) + strlen(kNewTabTail) +
+                 (logo ? logoLen : 0) + 256;
+    size_t used = 0;
+    char* html = (char*)malloc(cap);
+
+    if (!html) {
+        free(logo);
+        return;
+    }
+
+    used += (size_t)_snprintf(html, cap, "%s", kNewTabHead);
+
+    if (logo && logoLen) {
+        used += (size_t)_snprintf(html + used, cap - used,
+            "<div class=\"watermark\" aria-hidden=\"true\">%s</div>", logo);
+    }
+
+    used += (size_t)_snprintf(html + used, cap - used, "%s", kNewTabTail);
+    html[used < cap ? used : cap - 1] = 0;
+
+    mbLoadHtmlWithBaseUrl(v->wv, html, "minishell://newtab");
     postEvent(v, MBV_EV_PROGRESS, NULL, NULL, 100, 1);
+
+    free(html);
+    free(logo);
 }
 
 static void markLoading(MbView* v, int percent)
@@ -2401,7 +2506,12 @@ void agave_webview_set_zoom(AgaveWebView* view, int percent)
         agbLog(AGB_LOG_NAV, "page zoom %d%% -> %d%%", v->zoom, percent);
 
     v->zoom = percent;
-    viewApplyEngineScale(v);
+
+    /* Only a document that exists can take the style; before the first
+     * document-ready (createTabIn applies the zoom before navigating) the
+     * document-ready handler will apply it. */
+    if (v->docReady)
+        viewApplyEngineScale(v);
 }
 
 int agave_webview_zoom(AgaveWebView* view)

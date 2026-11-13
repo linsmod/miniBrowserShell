@@ -15,11 +15,13 @@
 #include <winternl.h>
 #include <tlhelp32.h>
 #include <winver.h>
+#include <dbghelp.h>
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
 
 #pragma comment(lib, "version.lib")
+#pragma comment(lib, "dbghelp.lib")
 
 #define CRASH_MAX_MODULES 192
 #define CRASH_MAX_FRAMES  48
@@ -30,6 +32,8 @@ typedef struct {
     unsigned long long size;
     wchar_t            name[MAX_MODULE_NAME32 + 1];
     wchar_t            path[MAX_PATH];
+    int                symbolsTried;
+    int                symbolsLoaded;
 } CrashModule;
 
 typedef LONG (WINAPI* RtlGetVersionFn)(PRTL_OSVERSIONINFOW);
@@ -271,6 +275,213 @@ static void collectModules(void)
 }
 
 /* ------------------------------------------------------------------------- */
+/* symbols (DbgHelp + PE exports)                                            */
+/* ------------------------------------------------------------------------- */
+
+/* 0 = not tried, 1 = ready, -1 = unavailable. */
+static int s_symState;
+
+static int symbolsInit(void)
+{
+    static wchar_t search[MAX_PATH * 2];
+    wchar_t exe[MAX_PATH];
+    wchar_t* slash;
+    const wchar_t* nt;
+
+    if (s_symState)
+        return s_symState > 0;
+
+    s_symState = -1;
+
+    search[0] = 0;
+    if (GetModuleFileNameW(NULL, exe, MAX_PATH)) {
+        slash = wcsrchr(exe, L'\\');
+        if (slash)
+            *(slash + 1) = 0;
+        wcsncpy(search, exe, MAX_PATH * 2 - 1);   /* the exe's dir holds minishell.pdb */
+        search[MAX_PATH * 2 - 1] = 0;
+    }
+
+    nt = _wgetenv(L"_NT_SYMBOL_PATH");
+    if (nt && nt[0]) {
+        size_t used = wcslen(search);
+        if (used && used + 1 < MAX_PATH * 2)
+            wcscat(search, L";");
+        wcsncat(search, nt, MAX_PATH * 2 - wcslen(search) - 1);
+    }
+
+    SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES |
+                  SYMOPT_NO_PROMPTS | SYMOPT_FAIL_CRITICAL_ERRORS);
+
+    if (!SymInitializeW(GetCurrentProcess(), search[0] ? search : NULL, FALSE))
+        return 0;
+
+    s_symState = 1;
+    return 1;
+}
+
+static CrashModule* moduleForAddress(unsigned long long address)
+{
+    int i;
+
+    for (i = 0; i < s_moduleCount; ++i) {
+        CrashModule* m = &s_modules[i];
+
+        if (address >= m->base && address < m->base + m->size)
+            return m;
+    }
+
+    return NULL;
+}
+
+/* Nearest named export at or below `rva`, e.g. "mbRunJs+0x1a2c". This is the
+ * fallback for a DLL shipped without a PDB (the engine DLL is one). */
+static void exportSymbolAt(const CrashModule* m, unsigned long long rva,
+                           char* out, size_t cap)
+{
+    HMODULE module = (HMODULE)(uintptr_t)m->base;
+    const IMAGE_DOS_HEADER* dos;
+    const IMAGE_NT_HEADERS* nt;
+    const IMAGE_DATA_DIRECTORY* dir;
+    const IMAGE_EXPORT_DIRECTORY* exports;
+    const DWORD* names;
+    const WORD* ordinals;
+    const DWORD* functions;
+    DWORD bestRva = 0;
+    const char* bestName = NULL;
+    DWORD i;
+
+    out[0] = 0;
+
+    if (!module || rva >= m->size)
+        return;
+
+    dos = (const IMAGE_DOS_HEADER*)module;
+    if (dos->e_magic != IMAGE_DOS_SIGNATURE)
+        return;
+
+    nt = (const IMAGE_NT_HEADERS*)((const unsigned char*)module + dos->e_lfanew);
+    if (nt->Signature != IMAGE_NT_SIGNATURE)
+        return;
+
+    dir = &nt->OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXPORT];
+    if (!dir->VirtualAddress || !dir->Size)
+        return;
+
+    exports = (const IMAGE_EXPORT_DIRECTORY*)((const unsigned char*)module +
+                                              dir->VirtualAddress);
+    names = (const DWORD*)((const unsigned char*)module + exports->AddressOfNames);
+    ordinals = (const WORD*)((const unsigned char*)module + exports->AddressOfNameOrdinals);
+    functions = (const DWORD*)((const unsigned char*)module + exports->AddressOfFunctions);
+
+    for (i = 0; i < exports->NumberOfNames && i < 65536; ++i) {
+        DWORD functionRva = functions[ordinals[i]];
+        const char* name;
+
+        /* Forwarded export: the RVA points into the export directory, not code. */
+        if (functionRva >= dir->VirtualAddress &&
+            functionRva < dir->VirtualAddress + dir->Size)
+            continue;
+
+        if (functionRva > rva || functionRva < bestRva)
+            continue;
+
+        name = (const char*)((const unsigned char*)module + names[i]);
+        if (!name || !name[0])
+            continue;
+
+        bestRva = functionRva;
+        bestName = name;
+    }
+
+    if (bestName)
+        _snprintf(out, cap, "%s+0x%llx (export)", bestName, rva - bestRva);
+    out[cap - 1] = 0;
+}
+
+/* "name+0xoff (file.c:line)" when DbgHelp can resolve the frame, otherwise the
+ * nearest export. Empty string when neither works (the report still has the
+ * module+offset). */
+static void symbolForAddress(unsigned long long address, char* out, size_t cap)
+{
+    CrashModule* m;
+    DWORD64 displacement = 0;
+    static wchar_t symStorage[sizeof(SYMBOL_INFOW) + MAX_SYM_NAME * sizeof(wchar_t)];
+    SYMBOL_INFOW* info = (SYMBOL_INFOW*)symStorage;
+    char name[384];
+
+    out[0] = 0;
+    name[0] = 0;
+
+    m = moduleForAddress(address);
+    if (!m)
+        return;
+
+    if (symbolsInit()) {
+        if (!m->symbolsTried) {
+            m->symbolsTried = 1;
+            if (SymLoadModuleExW(GetCurrentProcess(), NULL, m->path, m->name,
+                                 (DWORD64)m->base, (DWORD)m->size, NULL, 0) ||
+                GetLastError() == ERROR_SUCCESS)
+                m->symbolsLoaded = 1;
+        }
+
+        if (m->symbolsLoaded) {
+            memset(info, 0, sizeof(SYMBOL_INFOW));
+            info->SizeOfStruct = sizeof(SYMBOL_INFOW);
+            info->MaxNameLen = MAX_SYM_NAME;
+
+            if (SymFromAddrW(GetCurrentProcess(), (DWORD64)address, &displacement, info)) {
+                IMAGEHLP_LINEW64 line;
+                IMAGEHLP_MODULEW64 moduleInfo;
+                DWORD lineDisplacement = 0;
+                int exportish = 0;
+
+                WideCharToMultiByte(CP_UTF8, 0, info->Name, -1, name, sizeof(name), NULL, NULL);
+                name[sizeof(name) - 1] = 0;
+
+                memset(&moduleInfo, 0, sizeof(moduleInfo));
+                moduleInfo.SizeOfStruct = sizeof(moduleInfo);
+                if (SymGetModuleInfoW64(GetCurrentProcess(), (DWORD64)m->base, &moduleInfo) &&
+                    moduleInfo.SymType != SymPdb)
+                    exportish = 1;
+
+                memset(&line, 0, sizeof(line));
+                line.SizeOfStruct = sizeof(line);
+
+                if (SymGetLineFromAddrW64(GetCurrentProcess(), (DWORD64)address,
+                                          &lineDisplacement, &line) && line.FileName) {
+                    const wchar_t* file = wcsrchr(line.FileName, L'\\');
+                    char fileUtf8[256];
+
+                    file = file ? file + 1 : line.FileName;
+                    WideCharToMultiByte(CP_UTF8, 0, file, -1, fileUtf8,
+                                        sizeof(fileUtf8), NULL, NULL);
+                    fileUtf8[sizeof(fileUtf8) - 1] = 0;
+
+                    _snprintf(out, cap, "%s+0x%llx (%s:%lu)", name,
+                              (unsigned long long)displacement, fileUtf8,
+                              (unsigned long)line.LineNumber);
+                } else if (exportish) {
+                    /* Nearest name from the DLL's export table: the +offset can
+                     * be large, so mark it as an approximation. */
+                    _snprintf(out, cap, "%s+0x%llx (export)", name,
+                              (unsigned long long)displacement);
+                } else {
+                    _snprintf(out, cap, "%s+0x%llx", name,
+                              (unsigned long long)displacement);
+                }
+
+                out[cap - 1] = 0;
+                return;
+            }
+        }
+    }
+
+    exportSymbolAt(m, address - m->base, out, cap);
+}
+
+/* ------------------------------------------------------------------------- */
 /* report                                                                    */
 /* ------------------------------------------------------------------------- */
 
@@ -317,6 +528,7 @@ size_t crashReportFormat(char* buf, size_t cap, EXCEPTION_RECORD* rec)
     app(buf, cap, &len, "Engine      mb132_x64.dll %s\n", buildInfoEngineVersion());
     app(buf, cap, &len, "Engine hash SHA-256 %s\n", buildInfoEngineSha256());
     app(buf, cap, &len, "Project     %s\n", buildInfoProjectUrl());
+    app(buf, cap, &len, "Symbols     DbgHelp (PDB next to the exe or _NT_SYMBOL_PATH; otherwise nearest export)\n");
     app(buf, cap, &len, "OS          %s, DPI %u (%u%%)\n", os, systemDpi(),
         (systemDpi() * 100 + 48) / 96);
     app(buf, cap, &len, "Process     pid %lu, uptime %llu s\n",
@@ -334,9 +546,17 @@ size_t crashReportFormat(char* buf, size_t cap, EXCEPTION_RECORD* rec)
     app(buf, cap, &len, "Thread      %lu\n", (unsigned long)GetCurrentThreadId());
 
     if (rec) {
+        char symbol[512];
+
+        symbol[0] = 0;
+        if (rec->ExceptionAddress)
+            symbolForAddress((unsigned long long)(uintptr_t)rec->ExceptionAddress,
+                             symbol, sizeof(symbol));
+
         app(buf, cap, &len, "Code        0x%08lx  %s\n",
             (unsigned long)rec->ExceptionCode, exceptionName(rec->ExceptionCode));
-        app(buf, cap, &len, "Address     %s\n", addr);
+        app(buf, cap, &len, "Address     %s%s%s\n", addr,
+            symbol[0] ? "  " : "", symbol);
 
         if ((rec->ExceptionCode == EXCEPTION_ACCESS_VIOLATION ||
              rec->ExceptionCode == EXCEPTION_IN_PAGE_ERROR) &&
@@ -363,10 +583,13 @@ size_t crashReportFormat(char* buf, size_t cap, EXCEPTION_RECORD* rec)
         void* frames[CRASH_MAX_FRAMES];
         unsigned short count = CaptureStackBackTrace(0, CRASH_MAX_FRAMES, frames, NULL);
         char one[160];
+        char symbol[512];
 
         for (i = 0; i < (int)count; ++i) {
             formatAddress((unsigned long long)frames[i], one, sizeof(one));
-            app(buf, cap, &len, "  #%02d  %s\n", i, one);
+            symbolForAddress((unsigned long long)frames[i], symbol, sizeof(symbol));
+            app(buf, cap, &len, "  #%02d  %s%s%s\n", i, one,
+                symbol[0] ? "  " : "", symbol);
         }
 
         if (count == 0)

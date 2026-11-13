@@ -21,8 +21,9 @@
 
 | 路径 | 说明 |
 |---|---|
-| `app.rc` / `app.ico` | 可执行文件与窗口图标（ID 101，`main.c` 里注册到窗口类）；`assets/inspect.js` 也由它编进 exe（RCDATA 201） |
+| `app.rc` / `app.ico` | 可执行文件与窗口图标（ID 101，`main.c` 里注册到窗口类）；`assets/inspect.js`（RCDATA 201）和 `assets/logo.svg`（RCDATA 202）也由它编进 exe |
 | `assets/inspect.js` | F12 元素标记的页面半边；已嵌入 exe，exe 旁放同名文件可覆盖（方便改脚本） |
+| `assets/logo.svg` | 新标签页右下角水印；编进 exe，改图后重新构建即可，不用改代码（深色下按黑色剪影自动反色） |
 | `src/main.c` | 外壳主体（来自 agave，替换了引擎调用与品牌/内部页） |
 | `src/mb_view.c` | 适配层：用 miniblink 实现 `agave_webview_*` 控制 API |
 | `src/agave_webview.h` | 外壳与控件之间的 C 接口（含 `MC_DOWNLOAD_INFO`） |
@@ -42,7 +43,8 @@ cmake -S . -B build-msvc -G "Visual Studio 17 2022" -A x64
 cmake --build build-msvc --config Release
 ```
 
-产物：`build-msvc\Release\minishell.exe`，构建后会自动把 `..\mb132_x64.dll` 复制到 exe 旁边。
+产物：`build-msvc\Release\minishell.exe` + `minishell.pdb`（崩溃报告符号，和 exe 一起分发），
+构建后会自动把 `..\mb132_x64.dll` 复制到 exe 旁边。
 
 换了 DLL 之后重新生成导入库：
 
@@ -107,9 +109,14 @@ Cookie / localStorage 都在这个目录下，每个标签共享同一 profile�
 
 ## 新标签页与搜索归属
 
-新标签页 `minishell://newtab` 的搜索框提交后由外壳按默认搜索引擎解析（和地址栏同一条
-`normalizeUrl` 路径）：带点的文本按地址导航，其余按搜索词处理。百度和 Google 的结果 URL
-会带本构建的归属参数，方便从搜索结果反查版本：
+新标签页 `minishell://newtab` 的内容靠上排版（不是垂直居中），并跟随外壳的浅色/深色主题：
+页面加载后向宿主发 `__agb_newtab_get__`，外壳回 `__agb_newtab_theme__light|dark`，切主题
+或切回该标签时会再推一次。右下角水印来自内嵌的 `assets/logo.svg`（RCDATA 202），改图后
+重新构建即可。
+
+搜索框提交后由外壳按默认搜索引擎解析（和地址栏同一条 `normalizeUrl` 路径）：带点的文本
+按地址导航，其余按搜索词处理。百度和 Google 的结果 URL 会带本构建的归属参数，方便从搜索
+结果反查版本：
 
 - Baidu：`...&tn=minibrowsershell-<webcore6>-<shellver>`
 - Google：`...&client=minibrowsershell-<webcore6>-<shellver>`（不是 `tn`）
@@ -137,16 +144,20 @@ miniblink 偶尔会**静默丢掉一个新控件的第一次导航**：没有 `m
 ## 崩溃报告
 
 崩溃时外壳在进程 CWD 写 `agb_crash.txt`（完整报告），并另起一个进程显示崩溃页：
-异常代码/地址、访问类型、完整调用栈（`模块+偏移`）、全部已加载模块及版本、系统版本、
+异常代码/地址、访问类型、完整调用栈（`模块+偏移` **加 DbgHelp 符号**）、全部已加载模块及版本、系统版本、
 架构、DPI、进程存活时间，以及**排查构建用的标识**：项目地址、`mb132_x64.dll` 的 SHA-256、
 启动参数和环境变量摘要（URL/profile 路径等一律显示为 `(set)` / `(url omitted)`）。
 设置页的 **About** 也显示同一组信息（Project / Engine / Engine SHA-256 / Launched with /
 Environment），方便用户报问题时对照。
 
-**报告不含隐私**：没有 URL、页面标题、文件路径、账号或机器名，只有模块名和脱敏后的启动开关。
-页面上有一个 **Copy report** 按钮，复制出来的就是报告全文，可以直接贴到 issue；
-报告文件本身也可以作为附件。报告里的帧是 `模块+偏移`，维护者用对应版本的 PDB /
-`build-msvc/minishell.map` 还原符号。
+构建现在会生成 `build-msvc/Release/minishell.pdb`；崩溃处理器用 DbgHelp 读 exe 旁的 PDB，
+所以 shell 的帧显示成 `函数+偏移 (文件:行)`（行号只保留文件名，不带目录）。引擎没有附带 PDB，
+帧会退化成最近的导出名并标 `(export)`，例如 `mbRunJs+0x1a2c (export)`；把
+`mb132_x64.pdb` 放到 exe 旁或在 `_NT_SYMBOL_PATH` 里配置符号服务器，就能得到完整引擎符号。
+
+**报告不含隐私**：没有 URL、页面标题、文件路径、账号或机器名，只有模块名、函数名和脱敏后的
+启动开关（源码行只显示文件名）。页面上有一个 **Copy report** 按钮，复制出来的就是报告全文，
+可以直接贴到 issue；报告文件本身也可以作为附件。
 
 - `minishell.exe --crash-page <report>`：单独打开一个报告（崩溃处理器就是这么启动的），
   不读 profile、不恢复会话。

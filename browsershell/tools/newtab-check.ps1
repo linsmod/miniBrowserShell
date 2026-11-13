@@ -51,6 +51,40 @@ function Run-Query([string]$query, [string]$profile)
 $hash = (Get-FileHash (Join-Path $root 'build-msvc\Release\mb132_x64.dll') -Algorithm SHA256).Hash.ToLower()
 $hash6 = $hash.Substring(0, 6)
 
+function Run-PageCheck([bool]$dark)
+{
+    $file = Join-Path $env:TEMP ('mb-newtab-page-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.js')
+    @'
+    var m = document.querySelector('main').getBoundingClientRect();
+    var wm = document.querySelector('.watermark svg path');
+    probeExit('bg=' + getComputedStyle(document.body).backgroundColor +
+              '|wm=' + (wm ? 1 : 0) +
+              '|top=' + Math.round(m.top) + '|ih=' + innerHeight);
+'@ | Set-Content -Encoding UTF8 $file
+
+    if ($dark) { $env:AGB_NEWTAB_THEME = 'dark' }
+    else { Remove-Item Env:AGB_NEWTAB_THEME -ErrorAction SilentlyContinue }
+
+    $out = Join-Path $env:TEMP ('mb-newtab-page-' + [guid]::NewGuid().ToString('N').Substring(0, 8) + '.out')
+    $proc = Start-Process -FilePath $exe -ArgumentList @(
+        '--probe', 'minishell://newtab', '--userdata', (Join-Path $env:TEMP 'mb-newtab-page-profile'),
+        '--eval-file', $file, '--wait', '400', '--settle', '800', '--timeout', "$Timeout") `
+        -RedirectStandardOutput $out -RedirectStandardError ($out + '.err') -PassThru -WindowStyle Hidden
+    $null = $proc.WaitForExit($Timeout + 15000)
+    if (-not $proc.HasExited) { $proc.Kill() }
+
+    $text = Get-Content $out -Raw
+    Remove-Item $file, $out, ($out + '.err') -ErrorAction SilentlyContinue
+    Remove-Item Env:AGB_NEWTAB_THEME -ErrorAction SilentlyContinue
+
+    $line = ($text -split "`r?`n" | Where-Object { $_ -match '\[exit\]' } | Select-Object -First 1)
+    if (-not $line) { return $null }
+    return ($line -replace '.*\[exit\]\s*', '').Trim()
+}
+
+$pageLight = Run-PageCheck $false
+$pageDark = Run-PageCheck $true
+
 $profile = Join-Path $env:TEMP 'mb-newtab-profile-baidu'
 Remove-Item -Recurse -Force $profile -ErrorAction SilentlyContinue
 New-Item -ItemType Directory -Force $profile | Out-Null
@@ -88,10 +122,36 @@ if ($urlQuery -ne 'http://example.com') {
     $problems += "address-like query should navigate, got '$urlQuery'"
 }
 
+function Fields([string]$text)
+{
+    $map = @{}
+    foreach ($part in ($text -split '\|')) {
+        $eq = $part.IndexOf('=')
+        if ($eq -gt 0) { $map[$part.Substring(0, $eq)] = $part.Substring($eq + 1) }
+    }
+    return $map
+}
+
+$light = Fields $pageLight
+$dark = Fields $pageDark
+
+if ($light['bg'] -ne 'rgb(255, 255, 255)') { $problems += "light background='$($light['bg'])'" }
+if ($light['wm'] -ne '1') { $problems += 'logo watermark missing' }
+$top = [int]$light['top']
+$ih = [int]$light['ih']
+if ($top -lt 40 -or ($ih -gt 0 -and $top -ge [int]($ih / 2))) {
+    $problems += "content is not top-aligned: top=$top innerHeight=$ih"
+}
+
+if ($dark['bg'] -ne 'rgb(32, 33, 36)') { $problems += "dark background='$($dark['bg'])'" }
+if ($dark['wm'] -ne '1') { $problems += 'logo watermark missing in dark mode' }
+
 "baidu:  $baidu"
 "google: $google"
 "address: $urlQuery"
 "engine hash6: $hash6"
+"light page: $pageLight"
+"dark page:  $pageDark"
 
 if ($problems.Count -gt 0) {
     Remove-Item -Recurse -Force $profile, $profileGoogle -ErrorAction SilentlyContinue

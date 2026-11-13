@@ -47,7 +47,11 @@ add_custom_command(TARGET minishell PRE_BUILD
     COMMENT "Generating shell_version.h (git tag/short hash, +dirty)")
 
 # Crash reports name frames as exe+0xRRRR; the map turns those into functions.
+# /Zi + /DEBUG also produce minishell.pdb next to the exe, which the crash
+# handler loads through DbgHelp so the report shows function names and lines.
+target_compile_options(minishell PRIVATE "$<$<CONFIG:Release>:/Zi>")
 target_link_options(minishell PRIVATE
+    "$<$<CONFIG:Release>:/DEBUG>"
     "/MAP:${CMAKE_CURRENT_BINARY_DIR}/minishell.map")
 
 target_link_libraries(minishell PRIVATE
@@ -65,7 +69,8 @@ target_link_libraries(minishell PRIVATE
     shell32
     winhttp
     advapi32
-    version)
+    version
+    dbghelp)
 
 # Runtime payload: the DLL and the optional bundled fonts live next to the exe.
 add_custom_command(TARGET minishell POST_BUILD
