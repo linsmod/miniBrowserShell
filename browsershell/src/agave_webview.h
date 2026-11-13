@@ -240,16 +240,17 @@ AGW_API int agave_webview_eval(AgaveWebView* view, const char* script);
  * does nothing. */
 AGW_API int agave_webview_editor_command(AgaveWebView* view, const char* command);
 
-/* Zoom: 100 is normal. */
+/* Page zoom: 100 is normal. Applied as a CSS zoom on the document's root
+ * element, so it scales the page once and survives a navigation. The display
+ * scale stays the engine's, which keeps window.devicePixelRatio reporting the
+ * screen (125 on a 125% display) instead of the user's zoom. */
 AGW_API void agave_webview_set_zoom(AgaveWebView* view, int percent);
 AGW_API int  agave_webview_zoom(AgaveWebView* view);
 
 /* Display device scale: device pixels per CSS pixel in percent of 96 DPI (125 on
- * a 125% Windows display = GetDpiForWindow() * 100 / 96). It is half of the
- * page's scale: window.devicePixelRatio is zoom * device_scale / 100 and
- * innerWidth is the view width divided by that, exactly like a browser. Keeping
- * the user's zoom apart from the DPI is what makes Ctrl+= zoom the page while
- * the display keeps its own factor. Default 100. */
+ * a 125% Windows display = GetDpiForWindow() * 100 / 96). It describes the
+ * environment only (settings page, logs); the engine's high-DPI support paints
+ * the page at that scale on its own. Default 100. */
 AGW_API void agave_webview_set_device_scale(AgaveWebView* view, int percent);
 AGW_API int  agave_webview_device_scale(AgaveWebView* view);
 

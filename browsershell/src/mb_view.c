@@ -629,10 +629,8 @@ static void deliverEvent(MbView* v, MbEvent* e)
         break;
 
     case MBV_EV_DOCREADY:
-        /* Last chance to pin the page scale: the engine may have replaced it
-         * while creating the document (see viewApplyEngineScale). In the shell
-         * the value equals the display scale, so this is a no-op there; in a
-         * probe it makes devicePixelRatio deterministic. */
+        /* A fresh document starts unzoomed: put the tab's page zoom back and
+         * install the shared page helpers. */
         viewApplyEngineScale(v);
         injectPrelude(v);
         if (v->loading) {
@@ -675,11 +673,9 @@ static void MB_CALL_TYPE mbvOnUrl(mbWebView wv, void* param, const utf8* url,
     trace("cb url: %s back=%d fwd=%d", url ? url : "",
           canGoBack ? 1 : 0, canGoForward ? 1 : 0);
 
-    /* The engine drops a zoom set while the view has no document (the first
-     * paint brings its own default), so the page scale is re-applied as soon as
-     * the new document commits. Without this, a probe or a fast tab could keep
-     * the engine default and report a devicePixelRatio the shell never asked
-     * for. */
+    /* Page zoom is a style on the document's root element, so a new document
+     * starts at 100% and the requested zoom is re-applied as soon as the commit
+     * lands (the document-ready handler does it again for good measure). */
     if (v && !v->destroying)
         viewApplyEngineScale(v);
 
@@ -704,14 +700,11 @@ static void MB_CALL_TYPE mbvOnLoadingFinish(mbWebView wv, void* param,
           url ? url : "", failedReason ? failedReason : "");
     postEvent(v, MBV_EV_PROGRESS, NULL, NULL, 100, 1);
 
-    /* What the engine actually kept for this document: the page zoom is applied
-     * before the navigation (like a fresh tab) and the engine may replace it
-     * with the display scale while the document is created. If this line says
-     * 1.25 on a 125% display while a tab wants 1.0, the pre-load call was
-     * ignored and the zoom has to be re-applied once the document exists. */
-    agbLog(AGB_LOG_NAV, "page zoom: want=%.2f engine=%.3f url=%s",
-           (double)((float)(v->zoom > 0 ? v->zoom : 100) / 100.0f),
-           (double)mbGetZoomFactor(v->wv), v->url);
+    /* The page is zoomed with a CSS zoom on its root; the engine's own factor
+     * only reflects the display scale here. Log both so a page that reads smaller
+     * than expected can be told apart from a lost zoom. */
+    agbLog(AGB_LOG_NAV, "page zoom: css=%d%% engine=%.3f url=%s",
+           v->zoom > 0 ? v->zoom : 100, (double)mbGetZoomFactor(v->wv), v->url);
 
     /* A hard reload switched both caches off for its one request. */
     if (v->restoreCache) {
@@ -2200,21 +2193,44 @@ int agave_webview_editor_command(AgaveWebView* view, const char* command)
     return 1;
 }
 
-/* Page scale is NOT driven through the engine's zoom in this build.
+/* Page zoom is a CSS zoom on the root element, not the engine's zoom knob.
  *
  * Measured with a 40 CSS px marker on a 125% display (window 1100x800):
- *   no call            -> dpr 1.25, marker 50 px, right edge intact
+ *   no call                -> dpr 1.25, marker 50 px, right edge intact
  *   mbSetZoomFactor(1.0)   -> dpr 1.0,  marker 40 px (display scale dropped)
  *   mbSetZoomFactor(1.25)  -> dpr 1.25, marker 62 px (1.5625 painted!)
- * A factor above 1 is applied twice to painting (layout uses factor, the surface
- * uses factor*factor), so the page is drawn larger than the window and the right
- * and bottom are cut off. The only consistent state is letting the engine's
- * high-DPI support paint at the display scale, so no zoom call is made. The
- * requested zoom is still recorded for the UI/model. */
+ *   html { zoom: 1.25 }    -> dpr 1.25, marker 62 px, right edge intact
+ * mbSetZoomFactor applies its factor twice to painting (layout uses f, the
+ * surface uses f*f), so every value but 100% either shrinks the page or draws it
+ * larger than the window and cuts off the right/bottom. A CSS zoom scales the
+ * page once, leaves window.devicePixelRatio alone (the display scale stays the
+ * engine's) and keeps the page filling the window, which is what the user sees
+ * as "the page got bigger/smaller". */
 static void viewApplyEngineScale(MbView* v)
 {
+    char script[128];
+    mbWebFrameHandle frame;
+    int zoom;
+
     if (!v || v->destroying || !v->wv)
         return;
+
+    /* Before the first navigation there is no document and no frame: the
+     * document-ready handler applies the zoom once there is one. */
+    frame = mbWebFrameGetMainFrame(v->wv);
+    if (!frame)
+        return;
+
+    zoom = v->zoom > 0 ? v->zoom : 100;
+
+    if (zoom == 100)
+        _snprintf(script, sizeof(script),
+                  "try{document.documentElement.style.zoom='';}catch(e){}");
+    else
+        _snprintf(script, sizeof(script),
+                  "try{document.documentElement.style.zoom='%d%%';}catch(e){}", zoom);
+
+    mbRunJs(v->wv, frame, script, FALSE, NULL, NULL, NULL);
 }
 
 
@@ -2226,9 +2242,7 @@ void agave_webview_set_zoom(AgaveWebView* view, int percent)
         return;
 
     if (percent != v->zoom)
-        agbLog(AGB_LOG_NAV, "page zoom %d%% -> %d%% (recorded only: the engine's "
-               "zoom paints the page factor*factor in this build)",
-               v->zoom, percent);
+        agbLog(AGB_LOG_NAV, "page zoom %d%% -> %d%%", v->zoom, percent);
 
     v->zoom = percent;
     viewApplyEngineScale(v);
@@ -2244,10 +2258,10 @@ void agave_webview_set_device_scale(AgaveWebView* view, int percent)
     MbView* v = (MbView*)view;
     if (!v || percent <= 0)
         return;
-    /* Display scale: half of the page's devicePixelRatio. Updating it re-applies
-     * the page scale so a window dragged to another monitor keeps its page zoom. */
+    /* Display scale the shell reports (settings page, logs). Page zoom is a CSS
+     * zoom and does not depend on it; re-applying is harmless but pointless, so
+     * only the recorded value changes here. */
     v->deviceScale = percent;
-    viewApplyEngineScale(v);
 }
 
 int agave_webview_device_scale(AgaveWebView* view)

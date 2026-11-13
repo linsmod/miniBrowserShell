@@ -4129,6 +4129,11 @@ static const int kZoomSteps[] = {
     25, 33, 50, 67, 75, 80, 90, 100, 110, 125, 150, 175, 200, 250, 300, 400
 };
 
+/* Ctrl+wheel delta that has not made up a full notch yet. A mouse sends 120 per
+ * notch; a precision touchpad sends smaller deltas and would otherwise zoom once
+ * per event and shoot past the ladder. */
+static int g_zoomWheelAccum;
+
 static int zoomStep(int percent, int direction)
 {
     int count = (int)(sizeof(kZoomSteps) / sizeof(kZoomSteps[0]));
@@ -6425,15 +6430,15 @@ static int probeWriteBmp(const char* path, const unsigned char* bits,
     return ok;
 }
 
-/* CSS px -> device px at the probe's page zoom and display scale, rounding half
- * away from zero. getBoundingClientRect() is CSS px, a --shot-rect value comes
- * from it, and the mirror buffer is device px: at --zoom 125 on a 125% display a
- * 100px box covers 156 buffer pixels (1.25 * 1.25). */
-static int probeRectCssToClient(int value, int zoomPercent, int deviceScalePercent)
+/* CSS px -> device px at the probe's display scale, rounding half away from zero.
+ * getBoundingClientRect() is CSS px and a --shot-rect value comes from it; page
+ * zoom is a CSS zoom, so its effect is already in the rect (a 40px box reports
+ * 50 at 125%) and only the display scale is left to apply. */
+static int probeRectCssToClient(int value, int deviceScalePercent)
 {
-    long v = (long)value * zoomPercent * deviceScalePercent;
+    long v = (long)value * deviceScalePercent;
 
-    return (int)((v >= 0 ? v + 5000 : v - 5000) / 10000);
+    return (int)((v >= 0 ? v + 50 : v - 50) / 100);
 }
 
 static int probeCapture(const char* path)
@@ -6462,20 +6467,19 @@ static int probeCapture(const char* path)
     }
 
     /* --shot-rect is in CSS px, origin at the viewport's top-left: exactly what
-     * getBoundingClientRect() reports for an element scrolled into view, at any
-     * --zoom. Both edges are converted before subtracting so a fractional zoom
-     * cannot shrink the crop by a pixel. Clamp instead of failing: a stale rect
-     * still yields the part that is on screen, and a rect fully outside is
-     * reported as a failure, not a blank file that looks like a rendering bug. */
+     * getBoundingClientRect() reports for an element scrolled into view. Both
+     * edges are converted before subtracting so a fractional display scale cannot
+     * shrink the crop by a pixel. Clamp instead of failing: a stale rect still
+     * yields the part that is on screen, and a rect fully outside is reported as
+     * a failure, not a blank file that looks like a rendering bug. */
     rw = w;
     rh = h;
     if (g_probeShotRectSet) {
-        int zoom = g_probeZoom > 0 ? g_probeZoom : 100;
         int deviceScale = g_probeDeviceScale > 0 ? g_probeDeviceScale : 100;
-        int x0 = probeRectCssToClient(g_probeShotRect[0], zoom, deviceScale);
-        int y0 = probeRectCssToClient(g_probeShotRect[1], zoom, deviceScale);
-        int x1 = probeRectCssToClient(g_probeShotRect[0] + g_probeShotRect[2], zoom, deviceScale);
-        int y1 = probeRectCssToClient(g_probeShotRect[1] + g_probeShotRect[3], zoom, deviceScale);
+        int x0 = probeRectCssToClient(g_probeShotRect[0], deviceScale);
+        int y0 = probeRectCssToClient(g_probeShotRect[1], deviceScale);
+        int x1 = probeRectCssToClient(g_probeShotRect[0] + g_probeShotRect[2], deviceScale);
+        int y1 = probeRectCssToClient(g_probeShotRect[1] + g_probeShotRect[3], deviceScale);
 
         rx = x0;
         ry = y0;
@@ -6486,10 +6490,8 @@ static int probeCapture(const char* path)
         if (ry < 0) { rh += ry; ry = 0; }
 
         if (rx >= w || ry >= h || rw <= 0 || rh <= 0) {
-            int total = zoom * deviceScale / 100;
+            int total = deviceScale > 0 ? deviceScale : 100;
 
-            if (total < 1)
-                total = 1;
             agbLog(AGB_LOG_PROBE, "shot: rect %d,%d,%d,%d (css px) is outside the %dx%d view",
                    g_probeShotRect[0], g_probeShotRect[1],
                    g_probeShotRect[2], g_probeShotRect[3],
@@ -11335,6 +11337,31 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR commandLine, 
          * must select the window that owns the focused control. */
         if (win)
             g_cur = win;
+
+        /* Ctrl+wheel is the other half of Ctrl+plus: the shell owns the wheel
+         * while Ctrl is down, steps the same zoom ladder and swallows the event,
+         * so the page never scrolls (or zooms on its own) under the pointer. */
+        if (msg.message == WM_MOUSEWHEEL) {
+            int delta = GET_WHEEL_DELTA_WPARAM(msg.wParam);
+
+            if (GetKeyState(VK_CONTROL) & 0x8000) {
+                g_zoomWheelAccum += delta;
+
+                while (g_zoomWheelAccum >= WHEEL_DELTA) {
+                    g_zoomWheelAccum -= WHEEL_DELTA;
+                    setZoom(zoomStep(g_zoom, 1), "ctrl+wheel up");
+                }
+
+                while (g_zoomWheelAccum <= -WHEEL_DELTA) {
+                    g_zoomWheelAccum += WHEEL_DELTA;
+                    setZoom(zoomStep(g_zoom, -1), "ctrl+wheel down");
+                }
+
+                continue;
+            }
+
+            g_zoomWheelAccum = 0;
+        }
 
         if (msg.message == WM_KEYDOWN) {
             if (msg.hwnd == g_address && msg.wParam == VK_RETURN) {

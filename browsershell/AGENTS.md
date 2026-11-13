@@ -36,7 +36,7 @@ MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webv
 | `tools/inspect_hang.ps1` | 卡死时挂 cdb 抓全部线程栈（只读，摘下后恢复） |
 | `tools/layered-dib-check.ps1` | 验证 `UpdateLayeredWindow` 的硬性条件：源 DC 里必须还选中着那块 DIB（未选中 → 失败 err=31） |
 | `tools/settings-check.ps1` | `minishell://settings` 的双向协议回归：页面请求 → 宿主回值 → 断言主题/搜索引擎/缩放/版本/下载目录都到位 |
-| `tools/zoom-check.ps1` | 页面缩放与显示缩放互不干扰：zoom 100 → dpr 1/innerWidth 1100（任何屏幕），zoom 125 → dpr 1.25/innerWidth 880 |
+| `tools/zoom-check.ps1` | 页面缩放真的放大页面：每个 zoom 的着色高度 = 40px × zoom × 显示缩放，右边缘不被裁；dpr/innerWidth 仍按显示缩放 |
 | `tools/dlserver.ps1` | 下载/新窗口回归用的本地 HTTP 服务 |
 
 ## 引擎侧已知坑（会静默失败）
@@ -50,6 +50,10 @@ MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webv
 - 页面里的覆盖层（inspector.js 那类）会撑出滚动条；元素标记改由宿主窗口绘制（`ui_inspect.c`），
   页面只上报 `getBoundingClientRect()`。标记窗口只画那个框，元素信息显示在左下角状态气泡
   （`updateStatus`）：贴着元素画标签会被元素自身尺寸裁掉，1x1 的元素等于什么都看不到。
+- **`mbSetZoomFactor(f)` 会把缩放画两次**：实测 40 CSS px 的条在 125% 屏上，f=1.25 时
+  dpr 报 1.25 但着色 62px（1.5625），页面比窗口大、右/下被裁；f=1 还会把显示缩放丢掉。
+  页面缩放因此改成注入 CSS `zoom`（`mb_view.c` 的 `viewApplyEngineScale`），dpr/innerWidth
+  保持显示缩放，页面只放大一次。`tools/zoom-check.ps1` 锁的是这个行为。
 - **webview 上方不要放任何窗口**：哪怕是一个 1/255 alpha 的分层子窗口，只要盖在页面控件上，
   resize 后页面就不再重绘（停在旧帧）。
 - **`UpdateLayeredWindow` 的源 DC 里必须还选中着那块 DIB**：先把 bitmap `SelectObject` 还原再调用，

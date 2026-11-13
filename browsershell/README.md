@@ -69,7 +69,7 @@ Cookie / localStorage 都在这个目录下，每个标签共享同一 profile�
 | 悬停链接状态栏 | `mbOnMouseOverUrlChanged` |
 | 后退/前进/刷新/停止 | `mbGoBack` / `mbGoForward` / `mbReload` / `mbStopLoading`。**首次导航提交前（`mbOnURLChanged` 还没到）不能 `mbReload`**：它会把在途加载丢掉且不重发，页面永远空白、进度停在 5%，适配层此时改用 `mbLoadURL` 重新导航 |
 | 执行 JS | `mbRunJs`（异步、按命令顺序执行） |
-| 缩放 | `mbSetZoomFactor` |
+| 页面缩放 | 注入 CSS `zoom`（`mbSetZoomFactor` 在本版本会把因子画两次，页面被裁掉，见 AGENTS） |
 | 查找 | 注入 JS（`<mark data-mb-find>` 高亮 + scrollIntoView），非破坏式 API 不存在 |
 | 复制/粘贴/全选 | `mbEditorCopy` / `mbEditorPaste` / `mbEditorSelectAll` |
 | 右键菜单 | `mbSetContextMenuEnabled(FALSE)` + 子类化 `WM_CONTEXTMENU`，用页内 JS 取 link/img/selection，再弹外壳自绘菜单 |
@@ -89,7 +89,8 @@ Cookie / localStorage 都在这个目录下，每个标签共享同一 profile�
 
 - 标签：新建 / 关闭 / 中键关闭 / 按下即切换 / 会话恢复
 - 地址栏：Enter 导航、Ctrl+L 全选；无点号按搜索词走百度
-- 快捷键：Ctrl+T/W/R/L/F/J/D、Ctrl+Tab、Ctrl+Shift+A、Ctrl+Shift+T、F5、F12、Alt+←/→、Esc
+- 快捷键：Ctrl+T/W/R/L/F/J/D、Ctrl+Tab、Ctrl+Shift+A、Ctrl+Shift+T、Ctrl+= / Ctrl+- / Ctrl+0、F5、F12、Alt+←/→、Esc
+- 缩放：Ctrl+= / Ctrl+- / Ctrl+0、Ctrl+滚轮、应用菜单和设置页；按标签记录，导航后重新套用（CSS `zoom`）
 - 查找栏：浮层、Enter/Shift+Enter、Esc 关闭
 - 自绘右键菜单和应用菜单、书签/历史子菜单
 - 主题 `AGB_SHELL_THEME=light|dark|auto`、Per-Monitor V2 DPI
