@@ -144,13 +144,59 @@ try {
     } else {
         'the shell fetched and decoded a 32x32 favicon through the engine'
     }
+
+    # --- 3. restore: the cached icon exists before any network ---------------
+    # Same profile, server stopped: a restored tab must paint its icon from
+    # <profile>/favicons at startup, without waiting for (or needing) the page.
+    if (-not $shell.HasExited) { Stop-Process -Id $shell.Id -Force -ErrorAction SilentlyContinue }
+    $shell = $null
+    Stop-Job $server -ErrorAction SilentlyContinue
+    Remove-Job $server -Force -ErrorAction SilentlyContinue
+    $server = $null
+    Start-Sleep -Milliseconds 500
+
+    $cacheFiles = @(Get-ChildItem (Join-Path $work 'profile\favicons') -Filter *.bin -ErrorAction SilentlyContinue)
+    if ($cacheFiles.Count -eq 0) {
+        $problems += 'no icon was written to <profile>/favicons'
+    }
+
+    $before2 = if (Test-Path $log) { (Get-Content $log).Count } else { 0 }
+    $shell = Start-Process -FilePath $exe `
+        -ArgumentList @('--userdata', (Join-Path $work 'profile'),
+                        "http://127.0.0.1:$port/page.html") `
+        -WorkingDirectory $work -PassThru -WindowStyle Hidden
+    $childId = $shell.Id
+
+    $cached = $false
+    $deadline = (Get-Date).AddMilliseconds($Timeout)
+    while ((Get-Date) -lt $deadline) {
+        $lines = @()
+        if (Test-Path $log) {
+            $lines = @(Get-Content $log | Select-Object -Skip $before2 |
+                Where-Object { $_ -match "pid=$childId" })
+        }
+        if (@($lines | Where-Object { $_ -match 'favicon: cached \d+x\d+' }).Count -gt 0) {
+            $cached = $true
+            break
+        }
+        if ($shell.HasExited) { break }
+        Start-Sleep -Milliseconds 100
+    }
+
+    if ($cacheFiles.Count -gt 0 -and -not $cached) {
+        $problems += 'a restored tab did not paint the cached icon before the page loaded'
+    } elseif ($cached) {
+        "restored a cached icon without the server ($($cacheFiles.Count) file(s) in the cache)"
+    }
 } finally {
     if ($shell -and -not $shell.HasExited) {
         Stop-Process -Id $shell.Id -Force -ErrorAction SilentlyContinue
     }
     Remove-Item Env:AGB_SHELL_HIDDEN -ErrorAction SilentlyContinue
-    Stop-Job $server -ErrorAction SilentlyContinue
-    Remove-Job $server -Force -ErrorAction SilentlyContinue
+    if ($server) {
+        Stop-Job $server -ErrorAction SilentlyContinue
+        Remove-Job $server -Force -ErrorAction SilentlyContinue
+    }
     Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue
 }
 

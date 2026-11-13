@@ -101,6 +101,8 @@ MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webv
   `not impl`）。favicon 由外壳自己取：load 完后页面用 `agavePostMessage` 报 `<link rel=icon>` 的 URL，
   宿主用 `agave_webview_fetch()`（内部 = `mbNetCreateWebUrlRequest` + `mbNetStartUrlRequest`，
   走引擎的代理/cookie/TLS）下载，`/favicon.ico` 兜底，`ui_favicon.c` 用 WIC 解码。
+  原始字节按页面 URL 存在 `<profile>/favicons/<hash>.bin`：建标签/提交 URL 时先读缓存，
+  还原会话不用等网络就能显示图标；加载完成后仍会刷新并覆盖缓存，解不出来的缓存文件直接删掉。
 - **`mbNetCreateWebUrlRequest` 的 mime 不能传 NULL**：`mbNetCreateWebUrlRequest(url, "GET", NULL)`
   在引擎里直接 AV（本机 0xc0000005，栈在 mb132 内）；必须给一个真实 mime（如 `"image/png"`）。
   回调在 loader 线程，body 要自己攒起来再 `postEvent` 回 UI 线程。

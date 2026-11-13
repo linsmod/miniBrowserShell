@@ -129,6 +129,7 @@ typedef struct {
     int           iconNext;
     int           iconTried;
     int           iconFetching;
+    int           iconCached;      /* came from the disk cache: refresh after load */
     /* Last Page Visibility value handed to the control (-1 = never sent), so a
      * resize/minimize does not queue a visibility command per WM_SIZE. */
     int           visibilitySent;
@@ -273,7 +274,10 @@ static void tabClearIcon(Tab* tab)
 
     uiFaviconFree(tab->icon);
     tab->icon = NULL;
+    tab->iconCached = 0;
 }
+
+static void tabLoadCachedIcon(Tab* tab);
 
 /* Who owns the keyboard. The page is a separate child window, so the shell has
  * to remember this: window activation restores the keyboard to whoever had it,
@@ -1602,17 +1606,32 @@ static void onUrl(AgaveWebView* view, const char* url, void* user)
     /* A new document drops the previous site's icon: the old one must not sit
      * on a tab while the new page loads. The engine sends the new icon once it
      * has it (on_favicon) or requestFavicon() fetches it after the load. */
-    if (strcmp(tab->url, url) != 0) {
-        tabClearIcon(tab);
-        tab->iconPage[0] = 0;
-        tab->iconCandidates[0] = 0;
-        tab->iconNext = 0;
-        tab->iconTried = 0;
-        tab->iconFetching = 0;
-    }
+    {
+        int changed = strcmp(tab->url, url) != 0;
 
-    strncpy(tab->url, url, MAX_PATH_CHARS - 1);
-    tab->url[MAX_PATH_CHARS - 1] = 0;
+        if (changed) {
+            tabClearIcon(tab);
+            tab->iconPage[0] = 0;
+            tab->iconCandidates[0] = 0;
+            tab->iconNext = 0;
+            tab->iconTried = 0;
+            tab->iconFetching = 0;
+        }
+
+        strncpy(tab->url, url, MAX_PATH_CHARS - 1);
+        tab->url[MAX_PATH_CHARS - 1] = 0;
+
+        /* A page visited before shows its cached icon immediately; the load
+         * then refreshes it in the background. */
+        if (changed) {
+            tabLoadCachedIcon(tab);
+
+            if (tab->icon) {
+                syncChrome();
+                InvalidateRect(g_hwnd, &g_cur->chrome.tabstrip.rect, FALSE);
+            }
+        }
+    }
 
     /* The engine committed this document: the navigation guard can stand down. */
     navGuardSettled(tab);
@@ -1949,6 +1968,120 @@ static int faviconFallbackUrl(const char* pageUrl, char* out, size_t cap)
     return 1;
 }
 
+/* --- favicon disk cache --------------------------------------------------
+ * A restored tab must show its icon immediately at startup, before (and even
+ * without) a network: the encoded bytes that produced the last icon for a page
+ * URL live in <profile>/favicons/<hash>.bin, keyed by the page URL because that
+ * is all a restored session has. The cache is a hint, not the truth - the icon
+ * is still refreshed after the load, and a file that no longer decodes is
+ * dropped so the next load fetches again. */
+
+#define FAVICON_CACHE_MAX (1024 * 1024)
+
+static int faviconCachePath(const char* pageUrl, char* out, size_t cap)
+{
+    unsigned long long hash = 1469598103934665603ULL;
+    const char* p;
+    char name[64];
+    char dir[MAX_PATH_CHARS];
+
+    if (!pageUrl || !pageUrl[0] || !out || cap < 32)
+        return 0;
+
+    for (p = pageUrl; *p; ++p) {
+        hash ^= (unsigned char)*p;
+        hash *= 1099511628211ULL;
+    }
+
+    _snprintf(name, sizeof(name), "favicons\\%016llx.bin", hash);
+    name[sizeof(name) - 1] = 0;
+    statePath(out, cap, name);
+
+    _snprintf(dir, sizeof(dir), "%s\\favicons", g_dataDir);
+    dir[sizeof(dir) - 1] = 0;
+    createDirTree(dir);
+    return 1;
+}
+
+/* Shows the cached icon for the tab's current URL (no network). */
+static void tabLoadCachedIcon(Tab* tab)
+{
+    char path[MAX_PATH_CHARS];
+    FILE* file;
+    long length;
+    unsigned char* bytes;
+    UiFavicon* icon;
+
+    if (!tab || !tab->url[0] || !tab->view)
+        return;
+    if (strncmp(tab->url, "http://", 7) && strncmp(tab->url, "https://", 8))
+        return;
+    if (!faviconCachePath(tab->url, path, sizeof(path)))
+        return;
+
+    file = fopen(path, "rb");
+    if (!file)
+        return;
+
+    fseek(file, 0, SEEK_END);
+    length = ftell(file);
+    fseek(file, 0, SEEK_SET);
+
+    if (length <= 0 || length > FAVICON_CACHE_MAX) {
+        fclose(file);
+        return;
+    }
+
+    bytes = (unsigned char*)malloc((size_t)length);
+    if (!bytes || fread(bytes, 1, (size_t)length, file) != (size_t)length) {
+        free(bytes);
+        fclose(file);
+        return;
+    }
+    fclose(file);
+
+    icon = uiFaviconDecode(bytes, (int)length);
+    free(bytes);
+
+    if (!icon) {
+        remove(path);           /* corrupt or from an older decoder */
+        return;
+    }
+
+    tabClearIcon(tab);
+    tab->icon = icon;
+    tab->iconCached = 1;        /* shown, but still worth refreshing */
+    strncpy(tab->iconPage, tab->url, sizeof(tab->iconPage) - 1);
+    tab->iconPage[sizeof(tab->iconPage) - 1] = 0;
+    tab->iconTried = 0;
+
+    agbLog(AGB_LOG_SHELL, "favicon: cached %dx%d for %s (pid=%lu)",
+           uiFaviconWidth(icon), uiFaviconHeight(icon), tab->url,
+           (unsigned long)GetCurrentProcessId());
+}
+
+static void faviconCacheStore(const char* pageUrl, const void* data, int size)
+{
+    char path[MAX_PATH_CHARS];
+    FILE* file;
+
+    if (!pageUrl || !data || size <= 0 || size > FAVICON_CACHE_MAX)
+        return;
+    if (!faviconCachePath(pageUrl, path, sizeof(path)))
+        return;
+
+    file = fopen(path, "wb");
+    if (!file) {
+        agbLog(AGB_LOG_SHELL, "favicon: cannot write %s", path);
+        return;
+    }
+
+    if (fwrite(data, 1, (size_t)size, file) != (size_t)size)
+        agbLog(AGB_LOG_SHELL, "favicon: short write to %s", path);
+
+    fclose(file);
+}
+
 static void faviconNext(Tab* tab);
 
 /* One candidate finished (UI thread). Decode it; on failure try the next. */
@@ -1977,6 +2110,11 @@ static void onFaviconFetched(AgaveWebView* view, void* user, const char* url,
             if (tab->icon)
                 uiFaviconFree(tab->icon);
             tab->icon = icon;
+            tab->iconCached = 0;
+
+            /* Keep the encoded bytes: a restored tab shows them before the
+             * network is even up. */
+            faviconCacheStore(tab->iconPage, data, size);
 
             agbLog(AGB_LOG_SHELL, "favicon: %dx%d from %s (%d bytes, pid=%lu)",
                    uiFaviconWidth(icon), uiFaviconHeight(icon), url ? url : "",
@@ -2003,7 +2141,7 @@ static void faviconNext(Tab* tab)
     char* newline;
     size_t length;
 
-    if (!tab || !tab->used || !tab->view || tab->icon || tab->iconFetching)
+    if (!tab || !tab->used || !tab->view || tab->iconFetching)
         return;
 
     line = tab->iconCandidates + tab->iconNext;
@@ -2033,7 +2171,7 @@ static void startFaviconFetch(Tab* tab, const char* pageCandidates)
     size_t used;
     char fallback[MAX_PATH_CHARS];
 
-    if (!tab || !tab->used || !tab->view || tab->icon)
+    if (!tab || !tab->used || !tab->view || (tab->icon && !tab->iconCached))
         return;
     if (!tab->iconPage[0] || strcmp(tab->iconPage, tab->url) != 0)
         return;                     /* the page navigated away meanwhile */
@@ -2066,7 +2204,7 @@ static void requestFavicon(Tab* tab)
         return;
     if (strncmp(tab->url, "http://", 7) && strncmp(tab->url, "https://", 8))
         return;                     /* internal pages keep the letter chip */
-    if (tab->icon && !strcmp(tab->iconPage, tab->url))
+    if (tab->icon && !tab->iconCached && !strcmp(tab->iconPage, tab->url))
         return;
     if (tab->iconTried && !strcmp(tab->iconPage, tab->url))
         return;
@@ -3964,6 +4102,15 @@ static int createTabIn(int index, const char* url)
 
     navGuardWatch(tab, url);
     agave_webview_navigate(tab->view, url);
+
+    /* Restored sessions and startup URLs: show what the last visit's icon was
+     * before the page (and its network) is anywhere near ready. */
+    tabLoadCachedIcon(tab);
+    if (tab->icon) {
+        syncChrome();
+        InvalidateRect(g_hwnd, &g_cur->chrome.tabstrip.rect, FALSE);
+    }
+
     return 1;
 }
 

@@ -93,7 +93,8 @@ Cookie / localStorage 都在这个目录下，每个标签共享同一 profile�
 
 - 标签：新建 / 关闭 / 中键关闭 / 按下即切换 / 会话恢复；新标签页是 `minishell://newtab`
 - favicon：load 完后由页面报 `<link rel=icon>`，外壳用控件的 `agave_webview_fetch()`（引擎的代理/cookie/TLS）
-  下载、WIC 解码（PNG/ICO）后画进标签；页面没声明就取 `/favicon.ico`，都没有才退回首字母色块
+  下载、WIC 解码（PNG/ICO）后画进标签；页面没声明就取 `/favicon.ico`，都没有才退回首字母色块。
+  原始字节按页面 URL 缓存在 `<profile>/favicons/`，还原会话时标签先用缓存立刻显示图标，页面加载后再后台刷新
   （居中搜索框，地址栏显示为空），不是空白 about:blank
 - 地址栏：Enter 导航、Ctrl+L 全选；无点号按搜索词走默认搜索引擎
 - 快捷键：Ctrl+T/W/R/L/F/J/D、Ctrl+Tab、Ctrl+Shift+A、Ctrl+Shift+T、Ctrl+= / Ctrl+- / Ctrl+0、F5、F12、Alt+←/→、Esc
