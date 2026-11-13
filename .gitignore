@@ -30,3 +30,6 @@ cookies.dat
 # ---- editor / script leftovers ----
 /browsershell/src/main.c-
 .vscode/
+
+# ---- screenshots referenced from screenshots/README.md ----
+!screenshots/*.png
