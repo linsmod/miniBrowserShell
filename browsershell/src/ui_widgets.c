@@ -373,6 +373,7 @@ void uiTabStripLayout(UiTabStrip* strip, const UiTheme* theme,
     int active_slot;
     int active_exists;
     int compressed;
+    int sliding;
     int x;
     int tab_y;
     int available;
@@ -449,7 +450,52 @@ void uiTabStripLayout(UiTabStrip* strip, const UiTheme* theme,
 
     visible = total;
 
-    if (compressed) {
+    /* Close slide: keep the widths the tabs had before a close-chip click. The
+     * model no longer has that tab, so laying the remainder out with the same
+     * widths closes the hole by moving everything to its right one slot left;
+     * the tab promoted to active uses the closed active tab's width, which is
+     * why its close chip ends up exactly where the clicked one was. */
+    sliding = 0;
+    if (strip->slide) {
+        int used = 0;
+
+        for (i = 0; i < UI_MAX_TABS; ++i) {
+            if (tabVisible(model, i))
+                ++used;
+        }
+
+        if (used == strip->slide_count && used == total && used > 0) {
+            int sum = 0;
+
+            sliding = 1;
+
+            for (i = 0; i < visible; ++i) {
+                int index = strip->slot_of[i];
+                int w = (index == strip->slide_fill) ? strip->slide_closed_w
+                                                     : strip->slide_w[index];
+
+                if (w < 1) {
+                    sliding = 0;
+                    break;
+                }
+
+                slot[i] = w + gap;
+                sum += slot[i];
+            }
+
+            /* The row lost a slot, so it should fit; a bogus table must not
+             * push tabs under the window controls. */
+            if (sliding && sum > available + gap)
+                sliding = 0;
+        }
+
+        if (!sliding)
+            strip->slide = 0;   /* stale: this layout is the normal one */
+    }
+
+    if (sliding) {
+        /* slot[] is already filled from the frozen widths. */
+    } else if (compressed) {
         /* Every item costs its minimum width plus one gap; an active tab costs
          * 20 more than a background one (tab_active_min_w - tab_min_w). Taking
          * that off the width up front turns the capacity question into a single
@@ -590,6 +636,41 @@ void uiTabStripLayout(UiTabStrip* strip, const UiTheme* theme,
     strip->pressed_new_tab = pressed_new;
     strip->hover_search = hover_search;
     strip->pressed_search = pressed_search;
+}
+
+void uiTabStripSlideAfterClose(UiTabStrip* strip, int closed, int fill)
+{
+    int i;
+
+    if (!strip)
+        return;
+
+    /* Only a fully visible row can slide: a hidden tail would appear out of
+     * nowhere when the widths stop filling the strip. */
+    if (strip->count != strip->total || strip->total <= 1) {
+        strip->slide = 0;
+        return;
+    }
+
+    for (i = 0; i < UI_MAX_TABS; ++i)
+        strip->slide_w[i] = strip->tab[i].w;
+
+    strip->slide_fill = fill;
+    strip->slide_closed_w = (closed >= 0 && closed < UI_MAX_TABS)
+                                ? strip->tab[closed].w : 0;
+    strip->slide_count = strip->total - 1;   /* after the close */
+    strip->slide = 1;
+}
+
+void uiTabStripSlideEnd(UiTabStrip* strip)
+{
+    if (strip)
+        strip->slide = 0;
+}
+
+int uiTabStripSliding(const UiTabStrip* strip)
+{
+    return strip ? strip->slide : 0;
 }
 
 UiPart uiTabStripHit(UiTabStrip* strip, int x, int y, int* model_index)

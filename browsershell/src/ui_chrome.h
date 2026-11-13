@@ -120,6 +120,15 @@ void uiChromeSetFocusField(UiChrome* chrome, int field);
 void uiChromeLayout(UiChrome* chrome, int width, int height);
 void uiChromePaint(UiChrome* chrome, HDC hdc);
 
+/* A close-chip click: capture the strip's current widths so the next layout
+ * closes the hole by sliding the tabs to the right one slot left (the next tab,
+ * promoted if the closed one was active, keeps the active width, so its close
+ * chip stays under the pointer). The shell calls uiChromeEndCloseSlide() when
+ * the pointer leaves the tab strip. */
+void uiChromeBeginCloseSlide(UiChrome* chrome, int closed, int fill);
+void uiChromeEndCloseSlide(UiChrome* chrome);
+int  uiChromeCloseSliding(const UiChrome* chrome);
+
 /* The find bar floats over the page (Chrome's overlay), so it lives in its own
  * child window instead of a chrome row: this paints the card into a DC whose
  * origin is that window's client. The shell positions the window at

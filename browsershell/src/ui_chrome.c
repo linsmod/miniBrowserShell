@@ -121,6 +121,27 @@ void uiChromeSetFocusField(UiChrome* chrome, int field)
     chrome->focus_field = field;
 }
 
+void uiChromeBeginCloseSlide(UiChrome* chrome, int closed, int fill)
+{
+    if (!chrome)
+        return;
+
+    uiTabStripSlideAfterClose(&chrome->tabstrip, closed, fill);
+}
+
+void uiChromeEndCloseSlide(UiChrome* chrome)
+{
+    if (!chrome)
+        return;
+
+    uiTabStripSlideEnd(&chrome->tabstrip);
+}
+
+int uiChromeCloseSliding(const UiChrome* chrome)
+{
+    return chrome ? uiTabStripSliding(&chrome->tabstrip) : 0;
+}
+
 /* ------------------------------------------------------------------------- */
 /* layout                                                                    */
 /* ------------------------------------------------------------------------- */

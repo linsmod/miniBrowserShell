@@ -127,6 +127,17 @@ typedef struct {
     int    pressed_close;
     int    pressed_new_tab;
     int    pressed_search;
+
+    /* Post-close slide (uiChromeBeginCloseSlide): the widths the tabs had before
+     * a close-chip click. While `slide` is set, uiTabStripLayout() keeps them
+     * (and the active width), so removing one tab slides everything to its
+     * right left by one slot and the next tab's close chip lands under the
+     * pointer. The shell ends it when the pointer leaves the strip. */
+    int    slide;
+    int    slide_count;             /* used tabs after the close */
+    int    slide_fill;              /* model index that takes the closed slot */
+    int    slide_closed_w;          /* width of the closed tab (inherited by fill) */
+    int    slide_w[UI_MAX_TABS];    /* tab width per model index before the close */
 } UiTabStrip;
 
 typedef struct {
@@ -166,5 +177,16 @@ UiPart  uiTabStripHit(UiTabStrip* strip, int x, int y, int* model_index);
 void    uiTabStripMouse(UiTabStrip* strip, const UiChromeModel* model,
                         const UiMouseEvent* event, UiTabAction* action);
 void    uiTabStripLeave(UiTabStrip* strip);
+
+/* Freeze the strip's widths for the close slide: call right before the tab at
+ * `closed` is removed from the model (the model still has it). `fill` is the
+ * model index of the used tab that will take the hole (the nearest one to its
+ * right). The next uiTabStripLayout() lays the remaining tabs out with the
+ * stored widths and gives the fill tab the closed one's width, so its close
+ * chip lands exactly where the clicked one was; everything right of the hole
+ * slides left by one slot. uiTabStripSlideEnd() drops it again. */
+void    uiTabStripSlideAfterClose(UiTabStrip* strip, int closed, int fill);
+void    uiTabStripSlideEnd(UiTabStrip* strip);
+int     uiTabStripSliding(const UiTabStrip* strip);
 
 #endif /* AGAVE_UI_WIDGETS_H */

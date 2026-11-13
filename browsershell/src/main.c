@@ -1297,12 +1297,22 @@ static void syncTabVisibility(void)
     }
 }
 
+/* Set while closeTab() activates the tab that replaces the closed one: that is
+ * part of the close, not a user switch, so it must not drop the slide. */
+static int g_closingTab;
+
 static void setActiveTab(int index)
 {
     int i;
 
     if (index < 0 || index >= MAX_TABS || !g_tabs[index].used)
         return;
+
+    /* A user tab switch ends the close slide: its frozen active width belongs to
+     * the tab that is no longer active. The activation closeTab() performs is
+     * part of the close itself and keeps it. */
+    if (!g_closingTab && g_cur)
+        uiChromeEndCloseSlide(CHROME);
 
     if (g_inspectOn && index != g_activeTab)
         inspectStop("tab switch");
@@ -1458,10 +1468,91 @@ static int anyTabOpen(void)
     return 0;
 }
 
+static int nextUsedTab(int index)
+{
+    int i;
+
+    for (i = index + 1; i < MAX_TABS; ++i)
+        if (g_tabs[i].used)
+            return i;
+
+    return -1;
+}
+
+/* Test-only cursor: AGENTS forbids touching the real pointer, so the headless
+ * close-slide checks substitute the client position here. */
+static int   g_testCursorSet;
+static POINT g_testCursor;
+
+static int shellCursorClient(HWND hwnd, POINT* point)
+{
+    if (g_testCursorSet) {
+        *point = g_testCursor;
+        return 1;
+    }
+
+    if (!GetCursorPos(point))
+        return 0;
+    return ScreenToClient(hwnd, point) ? 1 : 0;
+}
+
+/* 1 when the pointer is over a tab's close chip right now. The close slide is
+ * armed from this, not from the command that closed the tab: a middle click on
+ * the tab body or Ctrl+W must keep the normal relayout. */
+static int pointerOnCloseChip(int index)
+{
+    POINT point;
+
+    if (!g_cur || index < 0 || index >= MAX_TABS)
+        return 0;
+    if (CHROME->tabstrip.close[index].w <= 0)
+        return 0;
+    if (!shellCursorClient(g_hwnd, &point))
+        return 0;
+
+    return uiRectContains(CHROME->tabstrip.close[index], point.x, point.y);
+}
+
+/* Hover is set by mouse moves; right after a slide the pointer did not move, so
+ * the chip that landed under it would look idle until the next move. */
+static void refreshTabHoverFromCursor(void)
+{
+    UiTabStrip* strip;
+    POINT point;
+    int i;
+
+    if (!g_cur)
+        return;
+
+    strip = &CHROME->tabstrip;
+    strip->hover_tab = -1;
+    strip->hover_close = -1;
+
+    if (!shellCursorClient(g_hwnd, &point))
+        return;
+
+    for (i = 0; i < strip->count; ++i) {
+        int index = strip->slot_of[i];
+
+        if (uiRectContains(strip->close[index], point.x, point.y)) {
+            strip->hover_tab = index;
+            strip->hover_close = index;
+            return;
+        }
+
+        if (uiRectContains(strip->tab[index], point.x, point.y)) {
+            strip->hover_tab = index;
+            return;
+        }
+    }
+}
+
 static void closeTab(int index)
 {
     int i;
     int wasActive;
+    int slide;
+    int fill;
     char url[MAX_PATH_CHARS];
 
     if (index < 0 || index >= MAX_TABS || !g_tabs[index].used)
@@ -1470,6 +1561,21 @@ static void closeTab(int index)
     wasActive = (index == g_activeTab);
     strncpy(url, g_tabs[index].url, sizeof(url) - 1);
     url[sizeof(url) - 1] = 0;
+
+    /* Clicked that tab's own close chip: remember the strip's widths so the
+     * hole closes by sliding the tabs to the right one slot left. The next tab
+     * (promoted if this one was active) then sits exactly under the pointer
+     * with its chip, so the same click can close it too. Captured before the
+     * teardown: the strip still has the pre-close geometry. */
+    fill = nextUsedTab(index);
+
+    slide = pointerOnCloseChip(index) && fill >= 0 &&
+            CHROME->tabstrip.count == CHROME->tabstrip.total;
+
+    if (slide)
+        uiChromeBeginCloseSlide(CHROME, index, fill);
+    else
+        uiChromeEndCloseSlide(CHROME);
 
     tabClearIcon(&g_tabs[index]);
 
@@ -1493,14 +1599,23 @@ static void closeTab(int index)
     memset(&g_tabs[index], 0, sizeof(Tab));
 
     if (g_activeTab == index) {
-        for (i = 0; i < MAX_TABS; ++i) {
-            if (g_tabs[i].used) {
-                setActiveTab(i);
-                break;
-            }
+        int prev = -1;
+
+        /* Browsers activate the tab to the right; only a closed rightmost tab
+         * falls back to the one on its left. */
+        for (i = 0; i < index; ++i) {
+            if (g_tabs[i].used)
+                prev = i;
         }
 
-        if (i == MAX_TABS) {
+        g_closingTab = 1;
+        if (fill >= 0)
+            setActiveTab(fill);
+        else if (prev >= 0)
+            setActiveTab(prev);
+        g_closingTab = 0;
+
+        if (fill < 0 && prev < 0) {
             g_activeTab = 0;
             updateStatus();
         }
@@ -1520,7 +1635,39 @@ static void closeTab(int index)
     }
 
     layoutAll();
+
+    /* The pointer did not move, so the chip that just landed under it has no
+     * hover from a mouse message: set it here. */
+    if (slide) {
+        refreshTabHoverFromCursor();
+        agbLog(AGB_LOG_SHELL, "close slide: widths frozen, next tab under pointer (pid=%lu)",
+               (unsigned long)GetCurrentProcessId());
+        InvalidateRect(g_hwnd, &CHROME->tabstrip.rect, FALSE);
+    }
+
     InvalidateRect(g_hwnd, NULL, TRUE);
+}
+
+/* The close slide lasts while the pointer stays inside the tab host. Any other
+ * layout change (resize, DPI) drops it too. */
+static void shellCheckCloseSlide(HWND hwnd)
+{
+    POINT point;
+    UiRect host;
+
+    if (!g_cur || !uiChromeCloseSliding(CHROME))
+        return;
+
+    host = CHROME->tabstrip.rect;
+
+    if (shellCursorClient(hwnd, &point) && uiRectContains(host, point.x, point.y))
+        return;
+
+    uiChromeEndCloseSlide(CHROME);
+    agbLog(AGB_LOG_SHELL, "close slide: pointer left the tab strip, relayout (pid=%lu)",
+           (unsigned long)GetCurrentProcessId());
+    layoutAll();
+    InvalidateRect(hwnd, &CHROME->tabstrip.rect, FALSE);
 }
 
 /* Reopen a specific recently-closed entry (the tab-search popup indexes into
@@ -4160,9 +4307,10 @@ static void createTab(const char* url)
  * seconds of every real navigation and rebuilds the one control that never
  * answered. */
 #define NAV_GUARD_TIMER        2
-/* Headless regression hook (AGB_TEST_CLOSE_TAB_MS): close the active tab while
- * its favicon download is still in flight. */
+/* Headless regression hooks (AGB_TEST_CLOSE_TAB_MS / AGB_TEST_CLOSE_CHIP): the
+ * timers are handled with the other WM_TIMER cases below. */
 #define TEST_CLOSE_TAB_TIMER   3
+#define TEST_SLIDE_END_TIMER   4
 #define NAV_GUARD_POLL_MS      250
 #define NAV_GUARD_DEFAULT_MS   4000
 #define NAV_GUARD_MAX_RESPAWNS 2
@@ -6069,6 +6217,10 @@ static LRESULT CALLBACK shellProcInner(HWND hwnd, UINT message, WPARAM wParam, L
         if (wParam == SIZE_MINIMIZED && uiTabSearchIsOpen())
             uiTabSearchClose();
 
+        /* The frozen tab widths belong to the old strip size. */
+        if (g_cur)
+            uiChromeEndCloseSlide(CHROME);
+
         /* Minimized: every view is hidden (Page Visibility + no layout/paint);
          * restored: only the active tab is. */
         g_minimized = (wParam == SIZE_MINIMIZED) ? 1 : 0;
@@ -6117,7 +6269,37 @@ static LRESULT CALLBACK shellProcInner(HWND hwnd, UINT message, WPARAM wParam, L
         if (wParam == TEST_CLOSE_TAB_TIMER) {
             KillTimer(hwnd, TEST_CLOSE_TAB_TIMER);
             agbLog(AGB_LOG_SHELL, "test: closing the active tab (fetch may be in flight)");
+
+            /* AGB_TEST_CLOSE_CHIP: act like a click that landed on that tab's
+             * own close chip. The real pointer is never moved. */
+            if (getenv("AGB_TEST_CLOSE_CHIP") &&
+                CHROME->tabstrip.close[g_activeTab].w > 0) {
+                UiRect chip = CHROME->tabstrip.close[g_activeTab];
+
+                g_testCursor.x = chip.x + chip.w / 2;
+                g_testCursor.y = chip.y + chip.h / 2;
+                g_testCursorSet = 1;
+                agbLog(AGB_LOG_SHELL, "test: fake cursor on close chip %d,%d",
+                       g_testCursor.x, g_testCursor.y);
+            }
+
             closeTab(g_activeTab);
+
+            if (g_testCursorSet)
+                SetTimer(hwnd, TEST_SLIDE_END_TIMER, 400, NULL);
+            return 0;
+        }
+
+        if (wParam == TEST_SLIDE_END_TIMER) {
+            UiRect host = CHROME->tabstrip.rect;
+
+            KillTimer(hwnd, TEST_SLIDE_END_TIMER);
+            g_testCursor.x = host.x + 20;
+            g_testCursor.y = host.y + host.h + 30;
+            agbLog(AGB_LOG_SHELL, "test: fake cursor leaves the tab strip %d,%d",
+                   g_testCursor.x, g_testCursor.y);
+            PostMessageA(hwnd, WM_MOUSEMOVE, 0,
+                         MAKELPARAM(g_testCursor.x, g_testCursor.y));
             return 0;
         }
         break;
@@ -6174,6 +6356,8 @@ static LRESULT CALLBACK shellProcInner(HWND hwnd, UINT message, WPARAM wParam, L
         UiMouseEvent event;
         TRACKMOUSEEVENT track;
 
+        shellCheckCloseSlide(hwnd);
+
         event.type = UI_MOUSE_MOVE;
         event.x = (short)LOWORD(lParam);
         event.y = (short)HIWORD(lParam);
@@ -6191,6 +6375,8 @@ static LRESULT CALLBACK shellProcInner(HWND hwnd, UINT message, WPARAM wParam, L
 
     case WM_MOUSELEAVE: {
         UiMouseEvent event;
+
+        shellCheckCloseSlide(hwnd);
 
         /* The pointer may only have moved onto a child (the native EDIT keeps
          * its pill hovered). If the cursor is still inside the shell, report a
@@ -6393,6 +6579,7 @@ static LRESULT CALLBACK shellProcInner(HWND hwnd, UINT message, WPARAM wParam, L
         unsigned dpi = HIWORD(wParam) ? (unsigned)HIWORD(wParam) : (unsigned)LOWORD(wParam);
         RECT* suggested = (RECT*)lParam;
 
+        uiChromeEndCloseSlide(CHROME);
         uiChromeSetDpi(CHROME, dpi);
         applyEditFonts();
         /* The page half: chrome metrics just scaled, and every tab of this
@@ -7269,6 +7456,7 @@ static int  g_uiShotHeight = 760;
 static unsigned g_uiShotDpi = 96;
 static int  g_uiShotMenu;          /* --ui-menu: paint the sample app menu */
 static int  g_uiShotFocus;         /* --ui-focus: address pill owns focus */
+static int  g_uiShotSlide;         /* --ui-close-slide: close-slide geometry checks */
 static char g_uiShotFaviconPath[MAX_PATH_CHARS];  /* --ui-favicon: tab icon fixture */
 
 static void probePrint(const char* tag, const char* text)
@@ -8648,7 +8836,9 @@ static void probeUsage(void)
             "            app menu, including its Bookmarks submenu), --ui-focus\n"
             "            (address pill focused: ring and fill assertions).\n"
             "            --ui-favicon <file> decodes a real icon (PNG/ICO) and\n"
-            "            asserts the first tab painted it.\n"
+            "            asserts the first tab painted it. --ui-close-slide runs\n"
+            "            the close-slide geometry checks (widths frozen, next tab\n"
+            "            under the pointer, relayout after the pointer leaves).\n"
             "            Exit 0 only when every check passes (UI_SHOT PASS).\n"
             "  --shot-rect <x,y,w,h>  crop the capture to a CSS-pixel rect\n"
             "            (origin at the viewport's top-left, i.e. the values\n"
@@ -10262,6 +10452,92 @@ static int uiShotMain(void)
     uiCheck("dpi-content-top", chrome.content.y == 60 + 66);
     uiCheck("dpi-menu-inside", chrome.toolbar.menu.rect.x + chrome.toolbar.menu.rect.w <= 1350);
 
+    /* --- close slide (--ui-close-slide) ----------------------------------- */
+    if (g_uiShotSlide) {
+        int x0, w0, x1, w1, c1, x2_old, x3_old;
+
+        shotFillModel(&chrome.model);
+        chrome.model.find_visible = 0;
+
+        /* The DPI block above left the theme at 150%; the slide is about the
+         * strip's own geometry, so measure it at 100%. */
+        uiChromeSetDpi(&chrome, 96);
+
+        /* Narrow: the active tab's minimum is wider than a background tab. The
+         * promoted tab must inherit the active width, or its close chip would
+         * not land where the clicked one was. */
+        uiChromeLayout(&chrome, 340, 300);
+
+        uiCheck("close-slide-active-wider",
+                chrome.tabstrip.tab[1].w > chrome.tabstrip.tab[0].w);
+
+        x0 = chrome.tabstrip.tab[0].x;
+        w0 = chrome.tabstrip.tab[0].w;
+        x1 = chrome.tabstrip.tab[1].x;
+        w1 = chrome.tabstrip.tab[1].w;
+        c1 = chrome.tabstrip.close[1].x;
+        x2_old = chrome.tabstrip.tab[2].x;
+        x3_old = chrome.tabstrip.tab[3].x;
+
+        uiChromeBeginCloseSlide(&chrome, 1, 2);
+        chrome.model.tabs[1].used = 0;
+        chrome.model.active = 2;
+        uiChromeLayout(&chrome, 340, 300);
+
+        uiCheck("close-slide-armed", uiChromeCloseSliding(&chrome) == 1);
+        uiCheck("close-slide-next-x", chrome.tabstrip.tab[2].x == x1);
+        uiCheck("close-slide-next-w", chrome.tabstrip.tab[2].w == w1);
+        uiCheck("close-slide-next-chip", chrome.tabstrip.close[2].x == c1);
+        uiCheck("close-slide-left-kept",
+                chrome.tabstrip.tab[0].x == x0 && chrome.tabstrip.tab[0].w == w0);
+        uiCheck("close-slide-right-shift",
+                chrome.tabstrip.tab[3].x == x2_old &&
+                chrome.tabstrip.tab[4].x == x3_old);
+
+        /* The row is one slot shorter until the pointer leaves: the "+" follows
+         * the last tab and leaves the gap on the right. */
+        uiCheck("close-slide-gap",
+                chrome.tabstrip.new_tab.x ==
+                    chrome.tabstrip.tab[4].x + chrome.tabstrip.tab[4].w +
+                        2 * chrome.theme.tab_gap);
+
+        /* Pointer left the strip: normal compression is back. */
+        uiChromeEndCloseSlide(&chrome);
+        uiChromeLayout(&chrome, 340, 300);
+        uiCheck("close-slide-ended", !uiChromeCloseSliding(&chrome));
+        uiCheck("close-slide-refilled", chrome.tabstrip.tab[0].w > w0);
+
+        /* Background close with roomy tabs: the row slides one slot left, every
+         * width (including the untouched active tab's) stays the same. */
+        {
+            int bx, bw, bc, x2, x3;
+
+            uiChromeLayout(&chrome, 1100, 760);
+
+            bx = chrome.tabstrip.tab[0].x;
+            bw = chrome.tabstrip.tab[0].w;
+            bc = chrome.tabstrip.close[0].x;
+            x2 = chrome.tabstrip.tab[2].x;
+            x3 = chrome.tabstrip.tab[3].x;
+
+            uiChromeBeginCloseSlide(&chrome, 0, 2);
+            chrome.model.tabs[0].used = 0;
+            uiChromeLayout(&chrome, 1100, 760);
+
+            uiCheck("close-slide-bg-chip",
+                    chrome.tabstrip.close[2].x == bc &&
+                    chrome.tabstrip.tab[2].x == bx &&
+                    chrome.tabstrip.tab[2].w == bw);
+            uiCheck("close-slide-bg-shift",
+                    (chrome.tabstrip.tab[3].x - x2 <= 1 &&
+                     chrome.tabstrip.tab[3].x - x2 >= -1) &&
+                    (chrome.tabstrip.tab[4].x - x3 <= 1 &&
+                     chrome.tabstrip.tab[4].x - x3 >= -1));
+
+            uiChromeEndCloseSlide(&chrome);
+        }
+    }
+
     SelectObject(memory, old);
     DeleteObject(bitmap);
     DeleteDC(memory);
@@ -10454,6 +10730,8 @@ static void parseShellArgv(void)
             g_uiShotFaviconPath[sizeof(g_uiShotFaviconPath) - 1] = 0;
         } else if (!strcmp(argv[i], "--ui-focus")) {
             g_uiShotFocus = 1;
+        } else if (!strcmp(argv[i], "--ui-close-slide")) {
+            g_uiShotSlide = 1;
         } else if (!strcmp(argv[i], "--help") || !strcmp(argv[i], "-h")) {
             g_showUsage = 1;
         } else if (!strcmp(argv[i], "--eval") && i + 1 < argc) {
@@ -12538,3 +12816,9 @@ int APIENTRY WinMain(HINSTANCE instance, HINSTANCE previous, LPSTR commandLine, 
 
     return 0;
 }
+
+
+
+
+
+

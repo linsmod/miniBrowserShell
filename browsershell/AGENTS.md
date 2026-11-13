@@ -48,6 +48,7 @@ MiniShell 是 miniblink 132 的桌面浏览器外壳（`src/` 下的 `agave_webv
 | `tools/settings-restore-check.ps1` | 恢复会话时排在后台的 `minishell://settings` 也能拿到动态数据：临时 profile 写 `restore=1` + settings/文件页两行 session，隐藏壳断言后台请求被回答且 `delivered` 计数达到整组 |
 | `tools/favicon-check.ps1` | favicon：`--ui-shot --ui-favicon` 解码并画出真实 PNG/ICO（断言 tab 像素），本地 HTTP 页面验证"页面报 icon URL → `agave_webview_fetch` 走引擎网络栈 → 解码落到 tab"，同一 profile 断网重启验证缓存图标，`AGB_TEST_CLOSE_TAB_MS` 验证下载中关标签不崩 |
 | `tools/last-tab-close-check.ps1` | 关掉最后一个标签会关闭窗口（单窗口即退出）：隐藏壳 + `AGB_TEST_CLOSE_TAB_MS`，断言进程 0 退出、日志有 close 路径、无崩溃报告 |
+| `tools/tab-close-slide-check.ps1` | 点 X 关闭后宽度冻结、右侧左移（下一个 X 落到鼠标下），指针离开 tab 条后重新压缩：`AGB_TEST_CLOSE_CHIP` 合成鼠标位置，`--ui-shot --ui-close-slide` 锁几何 |
 | `tools/gen-shell-version.ps1` | 构建前生成 `build-msvc/generated/shell_version.h`（tag 或 6 位 commit，脏树加 `-dirty`） |
 
 崩溃链路（报告 → 崩溃页）可以 headless 验证，不要开窗口：
