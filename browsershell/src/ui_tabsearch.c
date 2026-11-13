@@ -37,6 +37,15 @@ enum {
     TS_ROW_HEADER          /* a section caption, not selectable */
 };
 
+/* The popup's own tab-stop ring: the search field -> an item -> its close icon
+ * -> the next item -> ... The close icon is skipped for recently closed tabs
+ * (they have no chip). */
+enum {
+    TS_FOCUS_SEARCH = 0,
+    TS_FOCUS_ITEM,
+    TS_FOCUS_CLOSE
+};
+
 typedef struct {
     int kind;             /* TS_ROW_ITEM / TS_ROW_HEADER */
     int item;             /* index into items[] */
@@ -55,7 +64,10 @@ typedef struct {
     char query[TS_MAX_QUERY];
     TsRow rows[UI_TABSEARCH_MAX_ITEMS + 4];
     int row_count;
-    int selected;         /* index into rows[], -1 */
+    int selected;         /* keyboard focus row (ITEM/CLOSE), -1 */
+    int focus_kind;       /* TS_FOCUS_SEARCH / ITEM / CLOSE */
+    int hover_row;        /* row under the pointer: visual only */
+    int hover_close;      /* pointer on that row's close chip */
     int scroll_y;         /* pixels hidden above the list */
     int content_h;        /* full list height below the search row */
     int dragging_scroll;  /* the scrollbar thumb is being dragged */
@@ -447,8 +459,12 @@ static void tsRender(void)
         int caret_x;
         int caret_w = tsScale(1);
 
+        int field_focused = (g_ts.focus_kind == TS_FOCUS_SEARCH);
+
         uiFillRoundRect(&painter, field, tsScale(6), theme->field);
-        uiStrokeRoundRect(&painter, field, tsScale(6), theme->border_strong, 1.0f);
+        uiStrokeRoundRect(&painter, field, tsScale(6),
+                          field_focused ? theme->focus_ring : theme->border_strong,
+                          field_focused ? 1.5f : 1.0f);
         uiIcon(&painter, UI_ICON_SEARCH, icon, theme->icon, (1.5f * theme->scale));
 
         if (!g_ts.query[0]) {
@@ -471,7 +487,7 @@ static void tsRender(void)
         if (caret_x > text.x + text.w - tsScale(2))
             caret_x = text.x + text.w - tsScale(2);
 
-        if (g_ts.caret_on)
+        if (g_ts.caret_on && field_focused)
             uiFillRect(&painter,
                        uiRectMake(caret_x, field.y + tsScale(9), caret_w,
                                   field.h - tsScale(18)),
@@ -521,7 +537,8 @@ static void tsRender(void)
                    theme->font_small, theme->text_faint, UI_ALIGN_LEFT);
         } else {
             UiTabSearchItem* item = &g_ts.items[row->item];
-            int selected = (i == g_ts.selected);
+            int hovered = (i == g_ts.hover_row);
+            int focused = (g_ts.focus_kind != TS_FOCUS_SEARCH && i == g_ts.selected);
             UiRect row_rect = uiRectMake(TS_MARGIN + tsScale(6), top,
                                          panel.w - tsScale(12) - reserve,
                                          row_h - tsScale(2));
@@ -535,8 +552,12 @@ static void tsRender(void)
             char age[32];
             char sub[220];
 
-            if (selected)
+            /* Hover is visual only; the focus ring is the keyboard tab stop and
+             * says nothing about which tab is active in the main window. */
+            if (hovered || focused)
                 uiFillRoundRect(&painter, row_rect, tsScale(6), theme->menu_hover);
+            if (focused)
+                uiStrokeRoundRect(&painter, row_rect, tsScale(6), theme->focus_ring, 1.0f);
 
             uiFaviconChip(&painter, theme, favicon, item->url, item->title);
             uiText(&painter, item->title, title_rect, theme->font_ui,
@@ -549,17 +570,25 @@ static void tsRender(void)
             uiText(&painter, sub, sub_rect, theme->font_small,
                    theme->text_muted, UI_ALIGN_LEFT);
 
-            if (item->kind == UI_TABSEARCH_OPEN && selected) {
+            if (item->kind == UI_TABSEARCH_OPEN && (hovered || focused)) {
                 UiRect close = uiRectMake(row_rect.x + row_rect.w - tsScale(24),
                                           top + tsScale(13), tsScale(20), tsScale(20));
+                int close_hovered = hovered && g_ts.hover_close;
+                int close_focused = focused && g_ts.focus_kind == TS_FOCUS_CLOSE;
 
-                uiFillCircle(&painter, close.x + close.w / 2,
-                             close.y + close.h / 2, close.w / 2,
-                             theme->tab_close_hover);
+                if (close_hovered || close_focused)
+                    uiFillCircle(&painter, close.x + close.w / 2,
+                                 close.y + close.h / 2, close.w / 2,
+                                 theme->tab_close_hover);
+
                 uiIcon(&painter, UI_ICON_CLOSE,
                        uiRectMake(close.x + tsScale(4), close.y + tsScale(4),
                                   close.w - tsScale(8), close.h - tsScale(8)),
                        theme->text, (1.5f * theme->scale));
+
+                if (close_focused)
+                    uiStrokeRoundRect(&painter, close, close.w / 2,
+                                      theme->focus_ring, 1.0f);
             }
         }
 
@@ -597,7 +626,7 @@ static void tsRender(void)
 
 static int tsRowAt(int client_y)
 {
-    int y = tsScale(TS_SEARCH_H);
+    int y = TS_MARGIN + tsScale(TS_SEARCH_H);
     int i;
 
     client_y += g_ts.scroll_y;
@@ -610,6 +639,75 @@ static int tsRowAt(int client_y)
             return g_ts.rows[i].kind == TS_ROW_ITEM ? i : -1;
 
         y += row_h;
+    }
+
+    return -1;
+}
+
+static int tsRowIsItem(int row)
+{
+    return row >= 0 && row < g_ts.row_count && g_ts.rows[row].kind == TS_ROW_ITEM;
+}
+
+static int tsRowItemIsOpen(int row)
+{
+    return tsRowIsItem(row) &&
+           g_ts.items[g_ts.rows[row].item].kind == UI_TABSEARCH_OPEN;
+}
+
+/* Left edge of the close chip drawn on an item row. */
+static int tsCloseLeft(int row)
+{
+    int row_w = (g_ts.width - TS_MARGIN * 2) - tsScale(12) - tsScrollReserve();
+    int left = TS_MARGIN + tsScale(6) + row_w - tsScale(24);
+
+    (void)row;
+    return left;
+}
+
+static int tsFirstItemRow(void)
+{
+    int i;
+
+    for (i = 0; i < g_ts.row_count; ++i) {
+        if (g_ts.rows[i].kind == TS_ROW_ITEM)
+            return i;
+    }
+
+    return -1;
+}
+
+static int tsLastItemRow(void)
+{
+    int i;
+
+    for (i = g_ts.row_count - 1; i >= 0; --i) {
+        if (g_ts.rows[i].kind == TS_ROW_ITEM)
+            return i;
+    }
+
+    return -1;
+}
+
+static int tsNextItemRow(int row)
+{
+    int i;
+
+    for (i = row + 1; i < g_ts.row_count; ++i) {
+        if (g_ts.rows[i].kind == TS_ROW_ITEM)
+            return i;
+    }
+
+    return -1;
+}
+
+static int tsPrevItemRow(int row)
+{
+    int i;
+
+    for (i = row - 1; i >= 0; --i) {
+        if (g_ts.rows[i].kind == TS_ROW_ITEM)
+            return i;
     }
 
     return -1;
@@ -656,15 +754,21 @@ static void tsScrollToSelection(void)
 
 static void tsMoveSelection(int direction)
 {
-    int i = g_ts.selected + direction;
+    int i;
 
-    while (i >= 0 && i < g_ts.row_count && g_ts.rows[i].kind != TS_ROW_ITEM)
-        i += direction;
+    /* Arrows walk the items only (never the close chips) and moving to an item
+     * resets the tab stop to that item. */
+    if (g_ts.focus_kind == TS_FOCUS_SEARCH)
+        i = direction > 0 ? tsFirstItemRow() : tsLastItemRow();
+    else
+        i = direction > 0 ? tsNextItemRow(g_ts.selected)
+                          : tsPrevItemRow(g_ts.selected);
 
-    if (i < 0 || i >= g_ts.row_count)
+    if (i < 0)
         return;
 
     g_ts.selected = i;
+    g_ts.focus_kind = TS_FOCUS_ITEM;
     tsScrollToSelection();
     tsRender();
 }
@@ -680,18 +784,20 @@ static void tsMoveSelectionPage(int direction)
     if (steps < 1)
         steps = 1;
 
-    for (i = 0; i < steps; ++i) {
-        int j = target + direction;
+    if (g_ts.focus_kind == TS_FOCUS_SEARCH)
+        target = direction > 0 ? tsFirstItemRow() : tsLastItemRow();
 
-        while (j >= 0 && j < g_ts.row_count && g_ts.rows[j].kind != TS_ROW_ITEM)
-            j += direction;
-        if (j < 0 || j >= g_ts.row_count)
+    for (i = 0; i < steps && target >= 0; ++i) {
+        int j = direction > 0 ? tsNextItemRow(target) : tsPrevItemRow(target);
+
+        if (j < 0)
             break;
         target = j;
     }
 
-    if (target != g_ts.selected) {
+    if (target >= 0 && target != g_ts.selected) {
         g_ts.selected = target;
+        g_ts.focus_kind = TS_FOCUS_ITEM;
         tsScrollToSelection();
         tsRender();
     }
@@ -704,11 +810,77 @@ static void tsSelectEdge(int first)
     for (; i >= 0 && i < g_ts.row_count; i += first ? 1 : -1) {
         if (g_ts.rows[i].kind == TS_ROW_ITEM) {
             g_ts.selected = i;
+            g_ts.focus_kind = TS_FOCUS_ITEM;
             tsScrollToSelection();
             tsRender();
             return;
         }
     }
+}
+
+/* Tab / Shift+Tab inside the popup: search field -> item -> close -> next
+ * item -> ... -> search. Shift reverses; the item's close is skipped when it
+ * has no chip (recently closed). */
+static void tsTabFocus(int backward)
+{
+    if (g_ts.row_count <= 0)
+        return;
+
+    if (!backward) {
+        if (g_ts.focus_kind == TS_FOCUS_SEARCH) {
+            int i = tsFirstItemRow();
+
+            if (i < 0)
+                return;
+            g_ts.selected = i;
+            g_ts.focus_kind = TS_FOCUS_ITEM;
+        } else if (g_ts.focus_kind == TS_FOCUS_ITEM) {
+            if (tsRowItemIsOpen(g_ts.selected)) {
+                g_ts.focus_kind = TS_FOCUS_CLOSE;
+            } else {
+                int i = tsNextItemRow(g_ts.selected);
+
+                if (i < 0)
+                    g_ts.focus_kind = TS_FOCUS_SEARCH;
+                else {
+                    g_ts.selected = i;
+                    g_ts.focus_kind = TS_FOCUS_ITEM;
+                }
+            }
+        } else {
+            int i = tsNextItemRow(g_ts.selected);
+
+            if (i < 0)
+                g_ts.focus_kind = TS_FOCUS_SEARCH;
+            else {
+                g_ts.selected = i;
+                g_ts.focus_kind = TS_FOCUS_ITEM;
+            }
+        }
+    } else {
+        if (g_ts.focus_kind == TS_FOCUS_SEARCH) {
+            int i = tsLastItemRow();
+
+            if (i < 0)
+                return;
+            g_ts.selected = i;
+            g_ts.focus_kind = tsRowItemIsOpen(i) ? TS_FOCUS_CLOSE : TS_FOCUS_ITEM;
+        } else if (g_ts.focus_kind == TS_FOCUS_ITEM) {
+            int i = tsPrevItemRow(g_ts.selected);
+
+            if (i < 0) {
+                g_ts.focus_kind = TS_FOCUS_SEARCH;
+            } else {
+                g_ts.selected = i;
+                g_ts.focus_kind = tsRowItemIsOpen(i) ? TS_FOCUS_CLOSE : TS_FOCUS_ITEM;
+            }
+        } else {
+            g_ts.focus_kind = TS_FOCUS_ITEM;
+        }
+    }
+
+    tsScrollToSelection();
+    tsRender();
 }
 
 static void tsActivate(int row)
@@ -794,9 +966,16 @@ static LRESULT CALLBACK tsProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lP
             return 0;
 
         row = tsRowAt(point.y);
-        if (row >= 0 && row != g_ts.selected) {
-            g_ts.selected = row;
-            tsRender();
+        {
+            int close = tsRowItemIsOpen(row) && point.x >= tsCloseLeft(row) &&
+                        point.x < tsCloseLeft(row) + tsScale(20);
+
+            /* Hover is visual only: it never moves the keyboard tab stop. */
+            if (row != g_ts.hover_row || close != g_ts.hover_close) {
+                g_ts.hover_row = row;
+                g_ts.hover_close = close;
+                tsRender();
+            }
         }
         return 0;
     }
@@ -831,8 +1010,15 @@ static LRESULT CALLBACK tsProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lP
         }
 
         row = tsRowAt(point.y);
-        if (row >= 0)
+        if (row >= 0) {
+            int close = tsRowItemIsOpen(row) && point.x >= tsCloseLeft(row) &&
+                        point.x < tsCloseLeft(row) + tsScale(20);
+
             g_ts.selected = row;
+            g_ts.focus_kind = close ? TS_FOCUS_CLOSE : TS_FOCUS_ITEM;
+        } else {
+            g_ts.focus_kind = TS_FOCUS_SEARCH;
+        }
 
         tsRender();
         return 0;
@@ -857,8 +1043,7 @@ static LRESULT CALLBACK tsProc(HWND hwnd, UINT message, WPARAM wParam, LPARAM lP
 
         {
             UiTabSearchItem* item = &g_ts.items[g_ts.rows[row].item];
-            int row_w = (g_ts.width - TS_MARGIN * 2) - tsScale(12) - tsScrollReserve();
-            int close_left = TS_MARGIN + tsScale(6) + row_w - tsScale(24);
+            int close_left = tsCloseLeft(row);
 
             /* The close cross occupies the right end of a hovered open row. */
             if (item->kind == UI_TABSEARCH_OPEN &&
@@ -915,6 +1100,9 @@ int uiTabSearchOpen(HWND owner, const UiTheme* theme,
     g_ts.scroll_y = 0;
     g_ts.dragging_scroll = 0;
     g_ts.wheel_accum = 0;
+    g_ts.focus_kind = TS_FOCUS_SEARCH;
+    g_ts.hover_row = -1;
+    g_ts.hover_close = 0;
     tsRebuildRows();
 
     if (!g_ts.hwnd) {
@@ -989,6 +1177,8 @@ int uiTabSearchOpen(HWND owner, const UiTheme* theme,
 void uiTabSearchRefresh(const UiTabSearchItem* items, int count)
 {
     int keep;
+    int keepKind = g_ts.focus_kind;
+    int found = 0;
     int i;
 
     if (!g_ts.hwnd || !g_ts.theme || count <= 0)
@@ -1006,15 +1196,22 @@ void uiTabSearchRefresh(const UiTabSearchItem* items, int count)
                : -1;
 
     tsRebuildRows();
+    g_ts.hover_row = -1;
+    g_ts.hover_close = 0;
 
     if (keep >= 0) {
         for (i = 0; i < g_ts.row_count; ++i) {
             if (g_ts.rows[i].kind == TS_ROW_ITEM && g_ts.rows[i].item == keep) {
                 g_ts.selected = i;
+                g_ts.focus_kind = keepKind;
+                found = 1;
                 break;
             }
         }
     }
+
+    if (!found)
+        g_ts.focus_kind = TS_FOCUS_SEARCH;
 
     tsClampScroll();
     tsRender();
@@ -1057,8 +1254,24 @@ void uiTabSearchKey(UINT message, WPARAM wParam, LPARAM lParam)
         case VK_NEXT:  tsMoveSelectionPage(1); break;
         case VK_HOME:  tsSelectEdge(1); break;
         case VK_END:   tsSelectEdge(0); break;
+        case VK_TAB:   tsTabFocus((GetKeyState(VK_SHIFT) & 0x8000) != 0); break;
         case VK_RETURN:
-            tsActivate(g_ts.selected);
+            if (g_ts.focus_kind == TS_FOCUS_SEARCH) {
+                int first = tsFirstItemRow();
+
+                if (first >= 0)
+                    tsActivate(first);
+            } else if (g_ts.focus_kind == TS_FOCUS_CLOSE) {
+                if (tsRowItemIsOpen(g_ts.selected)) {
+                    int item = g_ts.rows[g_ts.selected].item;
+
+                    uiTabSearchClose();
+                    if (g_ts.cb.close)
+                        g_ts.cb.close(g_ts.cb.user, item);
+                }
+            } else {
+                tsActivate(g_ts.selected);
+            }
             break;
         case VK_ESCAPE:
             uiTabSearchClose();
@@ -1073,6 +1286,10 @@ void uiTabSearchKey(UINT message, WPARAM wParam, LPARAM lParam)
     if (message == WM_CHAR) {
         unsigned int ch = (unsigned int)wParam;
         size_t len = strlen(g_ts.query);
+
+        /* Typing always belongs to the filter: return the tab stop to the
+         * search field even when Tab had moved it to an item or its close. */
+        g_ts.focus_kind = TS_FOCUS_SEARCH;
 
         if (ch == 8 || ch == 127) {
             if (len > 0)

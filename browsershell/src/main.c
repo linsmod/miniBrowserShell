@@ -4347,6 +4347,10 @@ static void applyThemePref(int pref)
     int before = g_themePref;
     int i;
 
+    /* The popup holds a pointer to the window's theme; the retheme frees it. */
+    if (uiTabSearchIsOpen())
+        uiTabSearchClose();
+
     g_themePref = pref;
     agbLog(AGB_LOG_SHELL, "theme %s -> %s (%s)",
            themePrefName(before), themePrefName(pref),

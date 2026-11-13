@@ -3,7 +3,9 @@
  *
  * A layered top-level popup that lists the open tabs and the recently closed
  * ones in a filter field (typed query + caret), with a scrollbar when the list
- * is taller than the popup. It is deliberately *not* modal: the popup takes
+ * is taller than the popup. Tab/Shift+Tab walk an internal focus ring (field,
+ * item, the item's close chip, next item, ...); up/down move between items only,
+ * and mouse hover is visual only. It is deliberately *not* modal: the popup takes
  * the mouse (capture) so an outside click dismisses it, while the keyboard stays
  * with the shell, which forwards WM_CHAR / WM_KEYDOWN to uiTabSearchKey().
  *
